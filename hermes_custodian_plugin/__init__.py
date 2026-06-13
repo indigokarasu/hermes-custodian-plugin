@@ -36,8 +36,12 @@ def _get_hermes_home() -> Path:
 # Lifecycle hooks
 # ===========================================================================
 
-def _hook_post_tool_call(ctx, tool_name: str, args: dict, result: Any) -> None:
-    """Passive observation hook — scan tool output for error patterns."""
+def _hook_post_tool_call(ctx, tool_name: str, args: dict, result: Any, **kwargs) -> None:
+    """Passive observation hook — scan tool output for error patterns.
+    
+    Extra kwargs are accepted to stay compatible with evolving hook signatures
+    (e.g., task_id passed by newer Hermes versions).
+    """
     if not isinstance(result, str):
         return
     storage_dir = get_storage_dir()
@@ -55,8 +59,11 @@ def _hook_post_tool_call(ctx, tool_name: str, args: dict, result: Any) -> None:
                 continue
 
 
-def _hook_on_session_start(ctx) -> None:
-    """Session start hook — initialize storage, ensure directories exist."""
+def _hook_on_session_start(ctx, **kwargs) -> None:
+    """Session start hook — initialize storage, ensure directories exist.
+    
+    Extra kwargs accepted for forward compatibility.
+    """
     storage_dir = get_storage_dir()
     storage_dir.mkdir(parents=True, exist_ok=True)
     journal_dir = _get_hermes_home() / "commons" / "journals" / "ocas-custodian"
@@ -64,13 +71,19 @@ def _hook_on_session_start(ctx) -> None:
     logger.debug("Custodian: session start — storage verified")
 
 
-def _hook_on_session_end(ctx) -> None:
-    """Session end hook — write any pending journal entries."""
+def _hook_on_session_end(ctx, **kwargs) -> None:
+    """Session end hook — write any pending journal entries.
+    
+    Extra kwargs accepted for forward compatibility.
+    """
     logger.debug("Custodian: session end")
 
 
-def _hook_on_session_reset(ctx) -> None:
-    """Session reset hook — clear transient state."""
+def _hook_on_session_reset(ctx, **kwargs) -> None:
+    """Session reset hook — clear transient state.
+    
+    Extra kwargs accepted for forward compatibility.
+    """
     logger.debug("Custodian: session reset — transient state cleared")
 
 
@@ -130,7 +143,7 @@ def _handle_scan(ctx, **kwargs) -> str:
     """custodian_scan — run a scan (light or deep)."""
     mode = kwargs.get("mode", "light")
     storage_dir = get_storage_dir()
-    journal = Journal(journal_dir=storage_dir)
+    journal = Journal()
 
     if mode == "light":
         # Light scan: check gateway log tail, cron registry
