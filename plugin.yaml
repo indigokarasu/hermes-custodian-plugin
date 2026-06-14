@@ -1,5 +1,5 @@
 name: custodian
-version: "2.0.0"
+version: "3.0.0"
 description: "Operational monitoring, auto-repair, and escalation for Hermes. Monitors gateway logs, cron jobs, skill journals, and OCAS data directories."
 author: "Indigo Karasu (indigokarasu)"
 kind: standalone

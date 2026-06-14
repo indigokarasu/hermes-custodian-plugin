@@ -1,0 +1,103 @@
+/* Custodian Dashboard — Grid layout + glitch accents */
+
+/* Row 1: Three-column grid */
+.custodian-grid-row1 {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+/* Row 2: Two-column when escalations present, single column otherwise */
+.custodian-grid-row2 {
+  display: grid;
+  grid-template-columns: 2fr 3fr;
+  gap: 1rem;
+}
+
+.custodian-grid-row2-single {
+  display: block;
+}
+
+/* Scanning overlay */
+.custodian-scanning {
+  position: fixed;
+  bottom: 1rem;
+  right: 1rem;
+  background: var(--color-card, #1a1a1a);
+  border: 1px solid var(--color-border, #333);
+  border-radius: 8px;
+  padding: 0.5rem 0.75rem;
+  z-index: 50;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+/* Responsive: stack on narrow viewports */
+@media (max-width: 900px) {
+  .custodian-grid-row1 {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .custodian-grid-row1 > *:last-child {
+    grid-column: 1 / -1;
+  }
+  .custodian-grid-row2 {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 600px) {
+  .custodian-grid-row1 {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Subtle glitch accent on health icon when attention needed */
+.custodian-dashboard [data-state="attention"] .text-3xl,
+.custodian-dashboard .text-yellow-500 {
+  animation: custodian-pulse 2s ease-in-out infinite;
+}
+
+@keyframes custodian-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
+/* Scan history dot indicators */
+.custodian-dashboard .bg-green-500 {
+  box-shadow: 0 0 4px rgba(34, 197, 94, 0.4);
+}
+
+.custodian-dashboard .bg-yellow-500 {
+  box-shadow: 0 0 4px rgba(234, 179, 8, 0.4);
+}
+
+/* Escalation card left border accent */
+.custodian-dashboard .border-l-2 {
+  position: relative;
+}
+
+.custodian-dashboard .border-l-2::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: inherit;
+  border-radius: 2px 0 0 2px;
+}
+
+/* Auto-resolved grid compact cards */
+.custodian-dashboard .grid .card {
+  transition: border-color 0.15s ease;
+}
+
+.custodian-dashboard .grid .card:hover {
+  border-color: var(--color-ring, #666);
+}
+
+/* Subtle scan-in-progress indicator on button */
+.custodian-dashboard button[disabled] {
+  opacity: 0.6;
+  cursor: not-allowed;
+}

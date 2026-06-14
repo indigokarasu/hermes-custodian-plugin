@@ -656,7 +656,7 @@ class TestCronRegistrar:
 
 class TestRegister:
     def test_version(self):
-        assert __version__ == "2.0.0"
+        assert __version__ == "3.0.0"
 
     def test_register_registers_hooks(self, mock_ctx):
         register(mock_ctx)
@@ -920,7 +920,7 @@ class TestDashboardAPI:
         manifest_path = Path(__file__).resolve().parent.parent / "dashboard" / "manifest.json"
         data = json.loads(manifest_path.read_text())
         assert data["name"] == "custodian"
-        assert data["version"] == "2.0.0"
+        assert data["version"] == "3.0.0"
         assert "tab" in data
         assert data["tab"]["path"] == "/custodian"
         assert "api" in data
@@ -930,7 +930,7 @@ class TestDashboardAPI:
         assert js_path.exists()
         content = js_path.read_text()
         assert "custodian" in content.lower()
-        assert "mount" in content
+        assert "register" in content
 
 
 # ===========================================================================
@@ -946,7 +946,7 @@ class TestPluginManifest:
         yaml_path = Path(__file__).resolve().parent.parent / "plugin.yaml"
         content = yaml_path.read_text()
         assert "name: custodian" in content
-        assert "version: \"2.0.0\"" in content
+        assert "version: \"3.0.0\"" in content
         assert "post_tool_call" in content
         assert "on_session_end" in content
         assert "on_session_start" in content

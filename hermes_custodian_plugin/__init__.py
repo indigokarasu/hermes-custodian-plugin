@@ -22,7 +22,7 @@ from .cron_registrar import CronRegistrar
 
 logger = logging.getLogger(__name__)
 
-__version__ = "2.0.0"
+__version__ = "3.0.0"
 
 
 def _get_hermes_home() -> Path:

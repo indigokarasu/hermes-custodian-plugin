@@ -1,13 +1,14 @@
 {
   "name": "custodian",
   "label": "Custodian",
-  "description": "Operational monitoring dashboard — status toggle, last scan, open issues, confidence scores, and quick actions",
+  "description": "Operational monitoring — grid dashboard with auto-repair status, scan history, and escalation triage",
   "icon": "Shield",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "tab": {
     "path": "/custodian",
     "position": "after:skills"
   },
   "entry": "dist/index.js",
+  "css": "dist/style.css",
   "api": "plugin_api.py"
 }
