@@ -19,6 +19,7 @@ from .classifier import ConfidenceModel
 from .fix_engine import FixEngine
 from .journal import Journal
 from .cron_registrar import CronRegistrar
+from .cron_health import run_cron_health_check, format_health_report
 
 logger = logging.getLogger(__name__)
 
@@ -185,6 +186,13 @@ def _handle_scan(ctx, **kwargs) -> str:
             "status": "deep scan requires full agent context — use /custodian scan deep",
             "journal": str(journal_path),
         }, indent=2, default=str)
+
+
+def _handle_cron_health(ctx, **kwargs) -> str:
+    """custodian_cron_health — run cron health check."""
+    dry_run = kwargs.get("dry_run", False)
+    report = run_cron_health_check(dry_run=dry_run)
+    return format_health_report(report)
 
 
 def _handle_issues(ctx, **kwargs) -> str:
@@ -464,6 +472,14 @@ def register(ctx):
         handler=_handle_issues,
         description="List, filter, or resolve Custodian issues",
         emoji="📋",
+    )
+    ctx.register_tool(
+        name="custodian_cron_health",
+        toolset="custodian",
+        schema=ALL_SCHEMAS[3]["function"],
+        handler=_handle_cron_health,
+        description="Check cron job health — parse jobs.json, categorize errors, auto-remediate",
+        emoji="💓",
     )
 
     # Register slash command

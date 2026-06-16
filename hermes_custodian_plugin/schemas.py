@@ -55,8 +55,27 @@ CUSTODIAN_ISSUES_SCHEMA = {
     },
 }
 
+CUSTODIAN_CRON_HEALTH_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "custodian_cron_health",
+        "description": "Check cron job health: parse jobs.json, categorize errors, attempt auto-remediate, return structured report. Use 'dry_run' to analyze without side effects.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "dry_run": {
+                    "type": "boolean",
+                    "description": "If true, analyze only — do not attempt auto-remediation actions.",
+                },
+            },
+            "required": [],
+        },
+    },
+}
+
 ALL_SCHEMAS = [
     CUSTODIAN_STATUS_SCHEMA,
     CUSTODIAN_SCAN_SCHEMA,
     CUSTODIAN_ISSUES_SCHEMA,
+    CUSTODIAN_CRON_HEALTH_SCHEMA,
 ]

@@ -20,6 +20,12 @@ CRON_JOBS: List[Dict[str, Any]] = [
         "no_agent": False,
     },
     {
+        "name": "custodian:cron-health",
+        "schedule": "0 8,14,20,2 * * *",
+        "prompt": "Run cron health check. Use the custodian_cron_health tool (dry_run=false). If the report shows alerts (consecutive_failures >= 3, new errors, or error_count > 10), include the daily_health_line and alert details in your response. If all jobs are healthy, respond with exactly '[SILENT]'.",
+        "no_agent": False,
+    },
+    {
         "name": "custodian:escalation-runner",
         "schedule": "*/30 9-17 * * 1-5",
         "prompt": "Run Custodian escalation runner. Read your Custodian plugin skill. Process escalated Tier 3+ issues from issues.jsonl. Use terminal() with heredoc for all file mutations — never read_file on JSONL files (corrupts them), never execute_code (blocked in cron). When running as a cron job, if no escalated issues need processing, respond with exactly '[SILENT]'.",
