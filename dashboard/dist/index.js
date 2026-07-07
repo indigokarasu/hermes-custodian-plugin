@@ -1,535 +1,254 @@
 /**
- * Custodian Dashboard Plugin — Grid-based dashboard UI.
+ * Custodian Dashboard Plugin — real Hermes dashboard plugin (SDK / React IIFE).
  *
- * Layout: 3-column grid on desktop, stacking on mobile.
- *   Row 1: Status | Scan History | System
- *   Row 2: Escalations (left) | Auto-Resolved (right)
+ * Renders live data from /api/plugins/custodian/status:
+ *   health{state,label,detail}, issues{open,escalated,resolved_today},
+ *   escalations[] (real issue objects), system{cron,skills,gateway},
+ *   scan_history[], last_scan{at,age_minutes}.
  *
- * States:
- *   clear   — all green, minimal UI
- *   attention — escalations shown prominently
- *
- * Uses the Hermes dashboard plugin SDK (no external deps).
+ * Theme-native: dashboard tokens (var(--color-*)) + Tailwind classes + SDK components.
+ * Principles: grid-first, quiet-by-default, escalation-first, real actions, no fabricated data.
  */
-
 (function () {
   "use strict";
 
   var SDK = window.__HERMES_PLUGIN_SDK__;
   var PLUGINS = window.__HERMES_PLUGINS__;
-
-  if (!SDK || !PLUGINS) {
-    console.error("[custodian] Hermes plugin SDK not available.");
-    return;
-  }
+  if (!SDK || !PLUGINS) { console.error("[custodian] Hermes plugin SDK not available."); return; }
 
   var React = SDK.React;
-  var hooks = SDK.hooks;
+  var h = React.createElement;
+  var useState = SDK.hooks.useState;
+  var useEffect = SDK.hooks.useEffect;
+  var useCallback = SDK.hooks.useCallback;
   var fetchJSON = SDK.fetchJSON;
-  var components = SDK.components;
-  var utils = SDK.utils;
+  var C = SDK.components;
+  var Card = C.Card, CardHeader = C.CardHeader, CardTitle = C.CardTitle, CardContent = C.CardContent;
+  var Badge = C.Badge, Button = C.Button;
+  var Spinner = C.Spinner || function (p) { return h("span", { className: (p.className || "") + " animate-pulse" }, "…"); };
+  var cn = (SDK.utils && SDK.utils.cn) || function () { return Array.prototype.filter.call(arguments, Boolean).join(" "); };
 
-  var useState = hooks.useState;
-  var useEffect = hooks.useEffect;
-  var useCallback = hooks.useCallback;
-
-  var Card = components.Card;
-  var CardHeader = components.CardHeader;
-  var CardTitle = components.CardTitle;
-  var CardContent = components.CardContent;
-  var Badge = components.Badge;
-  var Button = components.Button;
-  var Spinner = components.Spinner || function (props) {
-    return React.createElement("span", { className: (props.className || "") + " animate-pulse" }, "…");
-  };
-
-  var cn = utils.cn;
-  var timeAgo = utils.isoTimeAgo || function (s) { return s || ""; };
-
-  // ---------------------------------------------------------------------------
-  // Helpers
-  // ---------------------------------------------------------------------------
-
-  function tierBadgeTone(tier) {
-    if (tier >= 4) return "destructive";
-    if (tier === 3) return "warning";
-    if (tier === 2) return "outline";
-    return "success";
+  // --- one-time scoped CSS injection (avoids manifest css dependency / restart) ---
+  function injectCSS() {
+    if (document.getElementById("cstd-css")) return;
+    var s = document.createElement("style");
+    s.id = "cstd-css";
+    s.textContent = [
+      // Hermes mockup skin, scoped to the plugin. Overriding the shadcn --color-* tokens
+      // here re-skins the SDK Card/Badge/Button (custom props inherit) to the purple palette.
+      ".cstd{--panel:rgba(255,255,255,.025);--panel2:rgba(255,255,255,.05);--bd:rgba(150,130,230,.18);--bd2:rgba(150,130,230,.30);--title:#cdc6f5;--tx:#e7e5f1;--muted:#9b97b8;--accent:#a78bfa;--ok:#4fd6a6;--warn:#f0b54e;--danger:#f0706e;--info:#6aa6f2;--mono:ui-monospace,'SF Mono',Menlo,Consolas,monospace;--color-background:#0a0a14;--color-foreground:#e7e5f1;--color-card:#0e0e1a;--color-card-foreground:#e7e5f1;--color-popover:#12121f;--color-popover-foreground:#e7e5f1;--color-border:rgba(150,130,230,.18);--color-input:rgba(150,130,230,.22);--color-muted:#15151f;--color-muted-foreground:#9b97b8;--color-primary:#a78bfa;--color-primary-foreground:#0a0a14;--color-secondary:#17151f;--color-secondary-foreground:#cdc6f5;--color-accent:#1c1830;--color-accent-foreground:#cdc6f5;--color-destructive:#f0706e;--color-destructive-foreground:#0a0a14;--color-ring:#a78bfa;display:flex;flex-direction:column;gap:1rem;color:var(--tx)}",
+      ".cstd .text-muted-foreground{color:var(--muted)}",
+      ".cstd .text-green-500{color:var(--ok)}.cstd .text-yellow-500{color:var(--warn)}.cstd .text-destructive{color:var(--danger)}",
+      // SDK cards -> panel + purple hairline + mono-ish titles
+      ".cstd [data-slot=card],.cstd .rounded-xl,.cstd .rounded-lg{background:var(--panel)!important;border-color:var(--bd)!important;border-radius:11px!important}",
+      ".cstd [data-slot=card-title]{font-family:var(--mono);font-size:.72rem!important;letter-spacing:.13em;text-transform:uppercase;color:var(--muted)!important;font-weight:500}",
+      ".cstd-head{display:flex;align-items:flex-start;justify-content:space-between;gap:1rem;flex-wrap:wrap;padding:2px}",
+      ".cstd-actions{display:flex;gap:.5rem;flex:0 0 auto;align-self:flex-start}",
+      ".cstd-kpis{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.75rem}",
+      ".cstd-kpi{background:var(--panel);border:1px solid var(--bd);border-radius:11px;padding:14px 15px}",
+      ".cstd-kpi-l{font-family:var(--mono);font-size:.69rem;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);min-height:2.5em;line-height:1.35}",
+      ".cstd-kpi-v{font-size:1.7rem;font-weight:300;line-height:1;margin-top:.4rem;color:var(--title)}",
+      ".cstd-grid{display:grid;grid-template-columns:2fr 1fr;gap:1rem;align-items:start}",
+      ".cstd-row{display:flex;align-items:baseline;justify-content:space-between;gap:.5rem;font-size:.82rem;font-family:var(--mono);padding:.2rem 0;border-top:1px solid var(--bd)}",
+      ".cstd-row:first-child{border-top:none}",
+      ".cstd-esc{border-left:2px solid var(--bd)!important}",
+      ".cstd-esc.t4{border-left-color:var(--danger)!important}",
+      ".cstd-esc.t3{border-left-color:var(--warn)!important}",
+      ".cstd-tick{display:flex;align-items:center;gap:.5rem;font-size:.78rem;font-family:var(--mono);padding:.18rem 0}",
+      ".cstd-dot{width:.5rem;height:.5rem;border-radius:9999px;flex:0 0 auto}",
+      "@media(max-width:900px){.cstd-grid{grid-template-columns:1fr}}",
+      "@media(max-width:600px){.cstd-kpis{grid-template-columns:1fr}}",
+    ].join("");
+    document.head.appendChild(s);
   }
 
-  function tierLabel(tier) {
-    var labels = { 1: "T1 Auto-fix", 2: "T2 Plan", 3: "T3 Escalate", 4: "T4 Critical" };
-    return labels[tier] || ("T" + tier);
-  }
-
-  function healthIcon(state) {
-    if (state === "clear") return "✓";
-    return "⚠";
-  }
-
-  function healthColor(state) {
-    if (state === "clear") return "text-green-500";
-    return "text-yellow-500";
-  }
-
-  function formatTime(iso) {
-    if (!iso) return "Never";
+  function relTime(iso) {
+    if (!iso) return "never";
     try {
-      var d = new Date(iso);
-      return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-    } catch (e) {
-      return iso;
-    }
+      var diff = Date.now() - new Date(iso).getTime();
+      var m = Math.floor(diff / 60000);
+      if (m < 1) return "just now";
+      if (m < 60) return m + "m ago";
+      var hr = Math.floor(m / 60);
+      if (hr < 24) return hr + "h ago";
+      return Math.floor(hr / 24) + "d ago";
+    } catch (e) { return iso; }
   }
-
-  function formatRelative(iso) {
-    if (!iso) return "Never";
-    try {
-      var d = new Date(iso);
-      var now = new Date();
-      var diffMs = now - d;
-      var diffMin = Math.floor(diffMs / 60000);
-      if (diffMin < 1) return "just now";
-      if (diffMin < 60) return diffMin + "m ago";
-      var diffHr = Math.floor(diffMin / 60);
-      if (diffHr < 24) return diffHr + "h ago";
-      return Math.floor(diffHr / 24) + "d ago";
-    } catch (e) {
-      return iso;
-    }
+  function clockTime(iso) {
+    if (!iso) return "";
+    try { return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); }
+    catch (e) { return ""; }
   }
+  function tierTone(t) { return t >= 4 ? "destructive" : t === 3 ? "warning" : t === 2 ? "outline" : "success"; }
+  function tierLabel(t) { return ({ 1: "T1 · auto-fix", 2: "T2 · plan", 3: "T3 · escalate", 4: "T4 · critical" })[t] || ("T" + t); }
 
-  // ---------------------------------------------------------------------------
-  // Status Card (top-left)
-  // ---------------------------------------------------------------------------
-
-  function StatusCard(props) {
-    var health = props.health;
-    var lastScan = props.lastScan;
-    var issues = props.issues;
-
-    return React.createElement(Card, null,
-      React.createElement(CardHeader, { className: "pb-2" },
-        React.createElement(CardTitle, { className: "text-sm" }, "Status")
-      ),
-      React.createElement(CardContent, null,
-        React.createElement("div", { className: "flex flex-col items-center gap-3 py-2" },
-          // Health icon
-          React.createElement("span", {
-            className: cn("text-3xl", healthColor(health.state))
-          }, healthIcon(health.state)),
-
-          // Label
-          React.createElement("span", { className: "text-sm font-medium text-center" },
-            health.label
-          ),
-
-          // Detail
-          React.createElement("span", { className: "text-xs text-muted-foreground text-center" },
-            health.detail
-          ),
-
-          // Stats row
-          React.createElement("div", { className: "flex gap-3 text-xs text-muted-foreground" },
-            issues.resolved_today > 0
-              ? React.createElement("span", null, "✓ ", issues.resolved_today, " resolved today")
-              : null,
-            issues.open > 0
-              ? React.createElement("span", null, issues.open, " open")
-              : null
-          ),
-
-          // Last scan
-          React.createElement("span", { className: "text-xs text-muted-foreground" },
-            "Last scan: ", lastScan.age_minutes != null
-              ? formatRelative(lastScan.at)
-              : "Never"
-          ),
-
-          // Activity link
-          React.createElement(Button, {
-            variant: "ghost",
-            size: "sm",
-            className: "mt-1 text-xs",
-            onClick: function () { if (props.onShowActivity) props.onShowActivity(); }
-          }, "View Activity →")
-        )
-      )
+  // --- KPI tile ---
+  function Kpi(label, value, color) {
+    return h("div", { className: "cstd-kpi" },
+      h("div", { className: "cstd-kpi-l" }, label),
+      h("div", { className: "cstd-kpi-v", style: color ? { color: color } : null }, value)
     );
   }
 
-  // ---------------------------------------------------------------------------
-  // Scan History Card (top-center)
-  // ---------------------------------------------------------------------------
-
-  function ScanHistoryCard(props) {
-    var scans = props.scans;
-    var onScan = props.onScan;
-
-    // Group by date
-    var grouped = {};
-    scans.forEach(function (s) {
-      var date = (s.created_at || "").split("T")[0] || "Unknown";
-      if (!grouped[date]) grouped[date] = [];
-      grouped[date].push(s);
-    });
-
-    var dates = Object.keys(grouped).sort().reverse();
-
-    return React.createElement(Card, null,
-      React.createElement(CardHeader, { className: "pb-2" },
-        React.createElement(CardTitle, { className: "text-sm" }, "Scan History")
-      ),
-      React.createElement(CardContent, null,
-        React.createElement("div", { className: "flex flex-col gap-3" },
-          dates.length === 0
-            ? React.createElement("span", { className: "text-xs text-muted-foreground" }, "No scans recorded yet.")
-            : dates.slice(0, 3).map(function (date) {
-                var dayScans = grouped[date];
-                return React.createElement("div", { key: date, className: "flex flex-col gap-1" },
-                  React.createElement("span", { className: "text-xs font-medium text-muted-foreground" },
-                    date === new Date().toISOString().split("T")[0] ? "Today" : date
-                  ),
-                  dayScans.slice(0, 4).map(function (scan, i) {
-                    var hasIssues = scan.issues_found > 0;
-                    var hasFixes = scan.fixes_applied > 0;
-                    return React.createElement("div", {
-                      key: i,
-                      className: "flex items-center gap-2 text-xs"
-                    },
-                      React.createElement("span", { className: "text-muted-foreground w-12" },
-                        formatTime(scan.created_at)
-                      ),
-                      React.createElement("span", {
-                        className: cn(
-                          "w-1.5 h-1.5 rounded-full",
-                          hasFixes ? "bg-green-500" : hasIssues ? "bg-yellow-500" : "bg-muted-foreground"
-                        )
-                      }),
-                      React.createElement("span", null,
-                        hasIssues
-                          ? scan.issues_found + " issue" + (scan.issues_found !== 1 ? "s" : "")
-                          : "clean"
-                      ),
-                      hasFixes
-                        ? React.createElement("span", { className: "text-green-500" },
-                            "· " + scan.fixes_applied + " fixed")
-                        : null,
-                      scan.has_escalations
-                        ? React.createElement("span", { className: "text-yellow-500" }, " · escalated")
-                        : null
-                    );
-                  })
-                );
-              }),
-
-          // Scan buttons
-          React.createElement("div", { className: "flex gap-2 pt-1" },
-            React.createElement(Button, {
-              size: "sm",
-              variant: "outline",
-              onClick: function () { onScan("light"); }
-            }, "▶ Light"),
-            React.createElement(Button, {
-              size: "sm",
-              variant: "outline",
-              onClick: function () { onScan("deep"); }
-            }, "▶ Deep")
+  // --- Escalation card (real issue object) ---
+  function EscalationCard(issue, i) {
+    var tier = issue.tier || 3;
+    var title = issue.title || issue.description || issue.fingerprint || issue.issue_id || "Untitled issue";
+    var jobs = issue.affected_jobs || [];
+    return h(Card, { key: i, className: cn("cstd-esc", "t" + tier) },
+      h(CardContent, { className: "py-3" },
+        h("div", { className: "flex flex-col gap-2" },
+          h("div", { className: "flex items-center gap-2 flex-wrap" },
+            h(Badge, { tone: tierTone(tier) }, tierLabel(tier)),
+            h("span", { className: "text-sm font-medium" }, title)
+          ),
+          issue.description && issue.description !== title
+            ? h("span", { className: "text-xs text-muted-foreground" },
+                issue.description.length > 240 ? issue.description.slice(0, 240) + "…" : issue.description)
+            : null,
+          jobs.length
+            ? h("span", { className: "text-xs text-muted-foreground" }, "Affects: " + jobs.join(", "))
+            : null,
+          issue.recommendation
+            ? h("span", { className: "text-xs text-muted-foreground italic" }, "Recommended: " + issue.recommendation)
+            : null,
+          h("div", { className: "flex items-center gap-2 pt-1" },
+            issue.source ? h("span", { className: "text-xs text-muted-foreground" }, "source: " + issue.source) : null,
+            h("span", { className: "text-xs text-muted-foreground" }, "· seen " + relTime(issue.last_seen || issue.created_at))
           )
         )
       )
     );
   }
-
-  // ---------------------------------------------------------------------------
-  // System Card (top-right)
-  // ---------------------------------------------------------------------------
-
-  function SystemCard(props) {
-    var system = props.system;
-
-    return React.createElement(Card, null,
-      React.createElement(CardHeader, { className: "pb-2" },
-        React.createElement(CardTitle, { className: "text-sm" }, "System")
-      ),
-      React.createElement(CardContent, null,
-        React.createElement("div", { className: "flex flex-col gap-2 text-xs" },
-          // Cron
-          React.createElement("div", { className: "flex justify-between" },
-            React.createElement("span", { className: "text-muted-foreground" }, "Cron"),
-            React.createElement("span", null,
-              system.cron.total, " jobs",
-              system.cron.disabled > 0
-                ? React.createElement("span", { className: "text-yellow-500 ml-1" },
-                    "(", system.cron.disabled, " disabled)")
-                : null
-            )
-          ),
-          // Skills
-          React.createElement("div", { className: "flex justify-between" },
-            React.createElement("span", { className: "text-muted-foreground" }, "Skills"),
-            React.createElement("span", null,
-              system.skills.active, " active",
-              system.skills.stale > 0
-                ? React.createElement("span", { className: "text-yellow-500 ml-1" },
-                    "(", system.skills.stale, " stale)")
-                : null
-            )
-          ),
-          // Gateway
-          React.createElement("div", { className: "flex justify-between" },
-            React.createElement("span", { className: "text-muted-foreground" }, "Gateway"),
-            React.createElement("span", null, "uptime ", system.gateway.uptime)
-          )
-        )
-      )
-    );
-  }
-
-  // ---------------------------------------------------------------------------
-  // Escalation Card (bottom-left, only shown when needed)
-  // ---------------------------------------------------------------------------
-
-  function EscalationCard(props) {
-    var issues = props.issues;
-
-    if (issues.length === 0) return null;
-
-    return React.createElement("div", { className: "flex flex-col gap-3" },
-      React.createElement("span", { className: "text-sm font-medium" },
-        "Needs Attention (", issues.length, ")"
-      ),
-      issues.map(function (issue, i) {
-        var tier = issue.tier || 3;
-        var fpId = issue.fingerprint_id || issue.id || "unknown";
-        var description = issue.description || issue.title || fpId;
-        var autoFix = issue.auto_fix || "";
-
-        return React.createElement(Card, {
-          key: i,
-          className: "border-l-2",
-          style: { borderLeftColor: tier >= 4 ? "var(--color-destructive)" : "var(--color-warning)" }
-        },
-          React.createElement(CardContent, { className: "py-3" },
-            React.createElement("div", { className: "flex flex-col gap-2" },
-              // Header row
-              React.createElement("div", { className: "flex items-center gap-2" },
-                React.createElement(Badge, { tone: tierBadgeTone(tier) }, tierLabel(tier)),
-                React.createElement("span", { className: "text-sm font-medium" }, description)
-              ),
-
-              // Detail
-              React.createElement("span", { className: "text-xs text-muted-foreground" },
-                issue.evidence || issue.detail || "Detected by Custodian scan."
-              ),
-
-              // What was tried
-              autoFix
-                ? React.createElement("span", { className: "text-xs text-muted-foreground italic" },
-                    "Auto-fix: ", autoFix)
-                : null,
-
-              // Action
-              React.createElement("div", { className: "pt-1" },
-                React.createElement(Button, {
-                  size: "sm",
-                  variant: tier >= 4 ? "destructive" : "outline",
-                  onClick: function () {
-                    // Open relevant page or trigger action
-                    if (fpId.indexOf("oauth") !== -1 || fpId.indexOf("google") !== -1) {
-                      window.open("https://console.cloud.google.com/apis/credentials", "_blank");
-                    } else if (fpId.indexOf("disk") !== -1) {
-                      // Could trigger a disk usage scan
-                      console.log("[custodian] Disk issue — manual review needed");
-                    }
-                  }
-                }, tier >= 4 ? "Resolve" : "Review →")
-              )
-            )
-          )
-        );
-      })
-    );
-  }
-
-  // ---------------------------------------------------------------------------
-  // Auto-Resolved Grid (bottom-right)
-  // ---------------------------------------------------------------------------
-
-  function AutoResolvedGrid(props) {
-    var fixes = props.fixes;
-
-    if (fixes.length === 0) return null;
-
-    return React.createElement("div", { className: "flex flex-col gap-3" },
-      React.createElement("span", { className: "text-sm font-medium" },
-        "Auto-Resolved (", fixes.length, ")"
-      ),
-      React.createElement("div", { className: "grid grid-cols-2 sm:grid-cols-3 gap-2" },
-        fixes.map(function (fix, i) {
-          return React.createElement(Card, { key: i, className: "border-border/50" },
-            React.createElement(CardContent, { className: "py-2 px-3" },
-              React.createElement("div", { className: "flex items-start gap-2" },
-                React.createElement("span", { className: "text-green-500 text-xs mt-0.5" }, "✓"),
-                React.createElement("div", { className: "flex flex-col gap-0.5 min-w-0" },
-                  React.createElement("span", { className: "text-xs font-medium truncate" },
-                    fix.fingerprint || fix.fingerprint_id || "Unknown"
-                  ),
-                  React.createElement("span", { className: "text-xs text-muted-foreground truncate" },
-                    fix.description || fix.command || "Fixed"
-                  )
-                )
-              )
-            )
-          );
-        })
-      )
-    );
-  }
-
-  // ---------------------------------------------------------------------------
-  // Main Dashboard
-  // ---------------------------------------------------------------------------
 
   function CustodianDashboard() {
-    var dataState = useState(null);
-    var data = dataState[0];
-    var setData = dataState[1];
-    var loadingState = useState(true);
-    var loading = loadingState[0];
-    var setLoading = loadingState[1];
-    var errorState = useState(null);
-    var error = errorState[0];
-    var setError = errorState[1];
-    var scanningState = useState(false);
-    var scanning = scanningState[0];
-    var setScanning = scanningState[1];
+    var st = useState(null), data = st[0], setData = st[1];
+    var ls = useState(true), loading = ls[0], setLoading = ls[1];
+    var es = useState(null), err = es[0], setErr = es[1];
+    var bs = useState(false), busy = bs[0], setBusy = bs[1];
 
-    var fetchData = useCallback(function () {
-      setLoading(true);
-      setError(null);
+    var load = useCallback(function () {
       fetchJSON("/api/plugins/custodian/status")
-        .then(function (result) {
-          setData(result);
-          setLoading(false);
-        })
-        .catch(function (err) {
-          setError(err.message || "Failed to load status");
-          setLoading(false);
-        });
+        .then(function (r) { setData(r); setErr(null); setLoading(false); })
+        .catch(function (e) { setErr((e && e.message) || "Failed to load"); setLoading(false); });
     }, []);
 
-    useEffect(function () {
-      fetchData();
-      // Auto-refresh every 60s
-      var interval = setInterval(fetchData, 60000);
-      return function () { clearInterval(interval); };
-    }, [fetchData]);
+    useEffect(function () { injectCSS(); load(); var iv = setInterval(load, 60000); return function () { clearInterval(iv); }; }, [load]);
 
-    var handleScan = useCallback(function (mode) {
-      setScanning(true);
+    var scan = useCallback(function (mode) {
+      setBusy(true);
       fetchJSON("/api/plugins/custodian/scan?mode=" + mode, { method: "POST" })
-        .then(function () {
-          // Refresh data after scan
-          setTimeout(fetchData, 1000);
-        })
-        .catch(function (err) {
-          setError("Scan failed: " + (err.message || "unknown error"));
-        })
-        .finally(function () {
-          setScanning(false);
-        });
-    }, [fetchData]);
+        .then(function () { setTimeout(load, 1200); })
+        .catch(function (e) { setErr("Scan failed: " + ((e && e.message) || "error")); })
+        .finally(function () { setBusy(false); });
+    }, [load]);
 
-    // Loading state
     if (loading && !data) {
-      return React.createElement(
-        "div",
-        { className: "flex items-center justify-center gap-2 p-8 text-sm text-muted-foreground" },
-        React.createElement(Spinner, { className: "h-4 w-4" }),
-        "Loading Custodian status…"
-      );
+      return h("div", { className: "flex items-center gap-2 p-8 text-sm text-muted-foreground" },
+        h(Spinner, { className: "h-4 w-4" }), "Loading Custodian…");
     }
-
-    // Error state
-    if (error && !data) {
-      return React.createElement(
-        "div",
-        { className: "p-4 text-sm text-destructive", role: "alert" },
-        "Error: ", error,
-        React.createElement(Button, { size: "sm", variant: "outline", onClick: fetchData, className: "ml-2" }, "Retry")
-      );
+    if (err && !data) {
+      return h("div", { className: "p-4 text-sm text-destructive", role: "alert" },
+        "Error: " + err, h(Button, { size: "sm", variant: "outline", className: "ml-2", onClick: load }, "Retry"));
     }
-
     if (!data) return null;
 
     var health = data.health || {};
     var issues = data.issues || {};
     var system = data.system || {};
-    var scans = data.scan_history || [];
     var escalations = data.escalations || [];
+    var scans = data.scan_history || [];
+    var lastScan = data.last_scan || {};
+    var clear = health.state === "clear";
 
-    // Build auto-resolved list from scan history
-    var autoResolved = [];
-    scans.forEach(function (s) {
-      if (s.fixes_applied > 0) {
-        autoResolved.push({
-          fingerprint: s.run_id,
-          description: s.fixes_applied + " fix" + (s.fixes_applied !== 1 ? "es" : "") + " · " + formatRelative(s.created_at),
-        });
-      }
-    });
+    var actions = h("div", { className: "cstd-actions" },
+      h(Button, { size: "sm", variant: "outline", disabled: busy, onClick: function () { scan("light"); } }, busy ? "Scanning…" : "Light scan"),
+      h(Button, { size: "sm", variant: "outline", disabled: busy, onClick: function () { scan("deep"); } }, "Deep scan")
+    );
 
-    var hasEscalations = escalations.length > 0;
-
-    return React.createElement(
-      "div",
-      { className: "custodian-dashboard p-4" },
-      // Row 1: Three-column grid
-      React.createElement("div", { className: "custodian-grid-row1" },
-        React.createElement(StatusCard, {
-          health: health,
-          lastScan: data.last_scan || {},
-          issues: issues,
-        }),
-        React.createElement(ScanHistoryCard, {
-          scans: scans,
-          onScan: handleScan,
-        }),
-        React.createElement(SystemCard, {
-          system: system,
-        })
+    // Header: single health source + actions (top-aligned)
+    var head = h("div", { className: "cstd-head" },
+      h("div", { className: "flex items-start gap-3" },
+        h("span", { className: cn("text-2xl leading-none mt-0.5", clear ? "text-green-500" : "text-yellow-500") }, clear ? "✓" : "⚠"),
+        h("div", { className: "flex flex-col" },
+          h("span", { className: "text-base font-medium" }, health.label || (clear ? "All clear" : "Needs attention")),
+          health.detail ? h("span", { className: "text-sm text-muted-foreground" }, health.detail) : null,
+          h("span", { className: "text-xs text-muted-foreground mt-1" }, "Last scan " + (lastScan.at ? relTime(lastScan.at) : "—"))
+        )
       ),
+      actions
+    );
 
-      // Row 2: Escalations + Auto-Resolved
-      hasEscalations
-        ? React.createElement("div", { className: "custodian-grid-row2" },
-            React.createElement(EscalationCard, { issues: escalations }),
-            autoResolved.length > 0
-              ? React.createElement(AutoResolvedGrid, { fixes: autoResolved })
-              : null
-          )
-        : autoResolved.length > 0
-          ? React.createElement("div", { className: "custodian-grid-row2-single" },
-              React.createElement(AutoResolvedGrid, { fixes: autoResolved })
-            )
-          : null,
+    var kpis = h("div", { className: "cstd-kpis" },
+      Kpi("Open issues", issues.open || 0, (issues.open ? "var(--color-warning,#f0b54e)" : null)),
+      Kpi("Escalated", issues.escalated || 0, (issues.escalated ? "var(--color-destructive,#f0706e)" : null)),
+      Kpi("Resolved today", issues.resolved_today || 0, (issues.resolved_today ? "var(--color-green-500,#4fd6a6)" : null))
+    );
 
-      // Scanning overlay
-      scanning
-        ? React.createElement("div", { className: "custodian-scanning" },
-            React.createElement("div", { className: "flex items-center gap-2 text-sm" },
-              React.createElement(Spinner, { className: "h-4 w-4" }),
-              "Running scan…"
-            )
-          )
-        : null
+    // System card
+    var systemCard = h(Card, null,
+      h(CardHeader, { className: "pb-2" }, h(CardTitle, { className: "text-sm" }, "System")),
+      h(CardContent, null,
+        h("div", { className: "flex flex-col" },
+          h("div", { className: "cstd-row" }, h("span", { className: "text-muted-foreground" }, "Cron"),
+            h("span", null, (system.cron && system.cron.total != null ? system.cron.total : "—") + " jobs"
+              + (system.cron && system.cron.disabled ? " · " + system.cron.disabled + " disabled" : ""))),
+          h("div", { className: "cstd-row" }, h("span", { className: "text-muted-foreground" }, "Skills"),
+            h("span", null, (system.skills && system.skills.active != null ? system.skills.active : "—") + " active"
+              + (system.skills && system.skills.stale ? " · " + system.skills.stale + " stale" : ""))),
+          h("div", { className: "cstd-row" }, h("span", { className: "text-muted-foreground" }, "Gateway"),
+            h("span", null, "uptime " + ((system.gateway && system.gateway.uptime) || "—")))
+        )
+      )
+    );
+
+    // Scan history card
+    var historyCard = h(Card, null,
+      h(CardHeader, { className: "pb-2" }, h(CardTitle, { className: "text-sm" }, "Recent scans")),
+      h(CardContent, null,
+        scans.length === 0
+          ? h("span", { className: "text-xs text-muted-foreground" }, "No scans recorded yet.")
+          : h("div", { className: "flex flex-col" }, scans.slice(0, 6).map(function (s, i) {
+              var hasFix = s.fixes_applied > 0, hasIssue = s.issues_found > 0;
+              return h("div", { key: i, className: "cstd-tick" },
+                h("span", { className: "text-muted-foreground", style: { width: "3.5rem" } }, clockTime(s.created_at) || (s.created_at || "").slice(5, 10)),
+                h("span", { className: "cstd-dot", style: { background: hasFix ? "var(--color-green-500,#4fd6a6)" : hasIssue ? "var(--color-warning,#f0b54e)" : "var(--color-muted-foreground)" } }),
+                h("span", null, hasIssue ? (s.issues_found + " issue" + (s.issues_found !== 1 ? "s" : "")) : "clean"),
+                hasFix ? h("span", { className: "text-green-500" }, "· " + s.fixes_applied + " fixed") : null,
+                s.has_escalations ? h("span", { className: "text-yellow-500" }, "· escalated") : null
+              );
+            }))
+      )
+    );
+
+    // Escalations OR all-clear (escalation-first)
+    var attentionBlock;
+    if (escalations.length) {
+      attentionBlock = h("div", { className: "flex flex-col gap-2" },
+        h("span", { className: "text-sm font-medium" }, "Needs your attention (" + escalations.length + ")"),
+        escalations.map(EscalationCard)
+      );
+    } else {
+      attentionBlock = h(Card, null, h(CardContent, { className: "py-6" },
+        h("div", { className: "flex flex-col items-center gap-1 text-center" },
+          h("span", { className: "text-green-500 text-2xl" }, "✓"),
+          h("span", { className: "text-sm font-medium" }, "Nothing needs you"),
+          h("span", { className: "text-xs text-muted-foreground" },
+            "Custodian is handling things autonomously"
+            + (issues.resolved_today ? " · " + issues.resolved_today + " resolved today" : "") + ".")
+        )
+      ));
+    }
+
+    return h("div", { className: "cstd p-4" },
+      head,
+      kpis,
+      h("div", { className: "cstd-grid" },
+        attentionBlock,
+        h("div", { className: "flex flex-col gap-4" }, systemCard, historyCard)
+      )
     );
   }
-
-  // ---------------------------------------------------------------------------
-  // Register
-  // ---------------------------------------------------------------------------
 
   PLUGINS.register("custodian", CustodianDashboard);
 })();

@@ -84,27 +84,7 @@ def _scan_journal_dir(days: int = 7, limit: int = 20) -> List[Dict]:
 
 
 def _summarize_journal(data: Dict) -> Dict:
-    """Produce a compact scan history entry from a journal file.
-
-    Handles the current escalation-runner format (run_id/timestamp/fixes_applied/
-    issues_resolved/system_health) and the legacy entries/kind format.
-    """
-    # Current escalation-runner format
-    if "system_health" in data or "issues_resolved" in data or "fixes_applied" in data:
-        fixes = data.get("fixes_applied") or []
-        resolved = data.get("issues_resolved") or []
-        still_open = data.get("issues_verified_still_open") or []
-        return {
-            "run_id": data.get("run_id", ""),
-            "created_at": data.get("timestamp", "") or data.get("created_at", ""),
-            "issues_found": len(still_open),
-            "fixes_applied": len(fixes) + len(resolved),
-            "escalations": int(data.get("escalated_issues", 0) or 0),
-            "has_actions": bool(fixes or resolved),
-            "has_escalations": bool(data.get("escalation_needed", False)),
-            "summary": data.get("summary", ""),
-        }
-    # Legacy entries/kind format
+    """Produce a compact scan history entry from a journal file."""
     entries = data.get("entries", [])
     observations = [e for e in entries if e.get("kind") == "observation"]
     actions = [e for e in entries if e.get("kind") == "action"]
@@ -196,7 +176,7 @@ def get_status():
             if files:
                 try:
                     data = json.loads(files[0].read_text(encoding="utf-8"))
-                    last_scan_at = data.get("created_at") or data.get("timestamp")
+                    last_scan_at = data.get("created_at")
                     if last_scan_at:
                         try:
                             scan_time = datetime.fromisoformat(last_scan_at.replace("Z", "+00:00"))
@@ -243,36 +223,21 @@ def _get_system_counts() -> Dict[str, Any]:
     cron_total = 0
     cron_disabled = 0
     cron_never_run = 0
-    # jobs.json lives under the active profile; fall back to the home-level path.
-    active = "default"
-    try:
-        ap = hermes_home / "active_profile"
-        if ap.exists():
-            active = ap.read_text(encoding="utf-8").strip() or "default"
-    except Exception:
-        pass
-    job_candidates = [
-        hermes_home / "profiles" / active / "cron" / "jobs.json",
-        hermes_home / "profiles" / "indigo" / "cron" / "jobs.json",
-        hermes_home / "cron" / "jobs.json",
-    ]
-    for jobs_path in job_candidates:
-        if not jobs_path.exists():
-            continue
+    jobs_path = hermes_home / "cron" / "jobs.json"
+    if jobs_path.exists():
         try:
-            raw = json.loads(jobs_path.read_text(encoding="utf-8"))
-            jobs = raw.get("jobs", []) if isinstance(raw, dict) else (raw if isinstance(raw, list) else [])
-            if not jobs:
-                continue
-            cron_total = len(jobs)
-            for j in jobs:
-                if not j.get("enabled", True):
-                    cron_disabled += 1
-                if j.get("last_status") is None and j.get("last_run_at") is None:
-                    cron_never_run += 1
-            break
+            jobs = json.loads(jobs_path.read_text(encoding="utf-8"))
+            if isinstance(jobs, list):
+                cron_total = len(jobs)
+                for j in jobs:
+                    if not j.get("enabled", True):
+                        cron_disabled += 1
+                    if j.get("last_status") is None and j.get("last_run_at") is None:
+                        cron_never_run += 1
+            elif isinstance(jobs, dict):
+                cron_total = len(jobs)
         except Exception:
-            continue
+            pass
 
     # Skills
     skills_active = 0
