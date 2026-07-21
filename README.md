@@ -1,7 +1,7 @@
 # hermes-custodian-plugin
 
 <p align="center">
-<img src="./assets/readme/hero.svg" width="100%" alt="Operational monitoring, auto-repair, and escalation plugin for Hermes Agent. Monitors gateway logs, cron jobs, skill journals, and OCAS data directories.">
+<img src="./assets/readme/hero.jpg" width="100%" alt="Operational monitoring, auto-repair, and escalation plugin for Hermes Agent. Monitors gateway logs, cron jobs, skill journals, and OCAS data directories.">
 </p>
 
 hermes-custodian-plugin — Operational monitoring, auto-repair, and escalation plugin for Hermes Agent. Monitors gateway logs, cron jobs, skill journals, and OCAS data directories.
