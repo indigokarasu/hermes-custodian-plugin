@@ -5,10 +5,10 @@ Runs as both:
   - A cron job (custodian:cron-health) for scheduled monitoring
 
 Data sources:
-  - /root/.hermes/profiles/indigo/cron/jobs.json (job metadata + status)
-  - /root/.hermes/profiles/indigo/cron/output/<job_id>/<timestamp>.md (run output)
-  - /root/.hermes/logs/errors.log (root-cause errors)
-  - /root/.hermes/logs/agent.log (agent-level logs)
+  - $HERMES_HOME/cron/jobs.json (job metadata + status)
+  - $HERMES_HOME/cron/output/<job_id>/<timestamp>.md (run output)
+  - $HERMES_HOME/logs/errors.log (root-cause errors)
+  - $HERMES_HOME/logs/agent.log (agent-level logs)
 
 Error categories (matched against last_error + logs):
   - google-workspace-mcp-unavailable — MCP server not running / not registered
@@ -42,14 +42,33 @@ from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
+
+def _get_hermes_home() -> Path:
+    """Resolve HERMES_HOME — must use env var, never __file__."""
+    home = os.environ.get("HERMES_HOME")
+    if not home:
+        home = os.path.join(os.path.expanduser("~"), ".hermes")
+    return Path(home)
+
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 
-JOBS_JSON = Path("/root/.hermes/profiles/indigo/cron/jobs.json")
-CRON_OUTPUT_DIR = Path("/root/.hermes/profiles/indigo/cron/output")
-ERRORS_LOG = Path("/root/.hermes/logs/errors.log")
-AGENT_LOG = Path("/root/.hermes/logs/agent.log")
+def _resolve_jobs_json() -> Path:
+    return _get_hermes_home() / "cron" / "jobs.json"
+
+
+def _resolve_cron_output_dir() -> Path:
+    return _get_hermes_home() / "cron" / "output"
+
+
+def _resolve_errors_log() -> Path:
+    return _get_hermes_home() / "logs" / "errors.log"
+
+
+def _resolve_agent_log() -> Path:
+    return _get_hermes_home() / "logs" / "agent.log"
 
 # Alert thresholds
 CONSECUTIVE_FAILURES_ALERT = 3
@@ -168,11 +187,12 @@ ERROR_CATEGORIES: List[Dict[str, Any]] = [
 
 def load_jobs() -> List[Dict[str, Any]]:
     """Load jobs from jobs.json. Returns empty list on failure."""
-    if not JOBS_JSON.exists():
-        logger.warning("jobs.json not found at %s", JOBS_JSON)
+    jobs_path = _resolve_jobs_json()
+    if not jobs_path.exists():
+        logger.warning("jobs.json not found at %s", jobs_path)
         return []
     try:
-        data = json.loads(JOBS_JSON.read_text(encoding="utf-8"))
+        data = json.loads(jobs_path.read_text(encoding="utf-8"))
         return data.get("jobs", [])
     except Exception as e:
         logger.error("Failed to parse jobs.json: %s", e)
@@ -269,7 +289,7 @@ def _find_recent_error_lines(job_name: str, job_id: str, tail: int = ERROR_LOG_T
     lines = []
 
     # Search errors.log
-    for log_path in [ERRORS_LOG, AGENT_LOG]:
+    for log_path in [_resolve_errors_log(), _resolve_agent_log()]:
         if not log_path.exists():
             continue
         try:
