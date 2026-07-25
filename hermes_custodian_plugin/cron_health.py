@@ -5,10 +5,10 @@ Runs as both:
   - A cron job (custodian:cron-health) for scheduled monitoring
 
 Data sources:
-  - /root/.hermes/profiles/indigo/cron/jobs.json (job metadata + status)
-  - /root/.hermes/profiles/indigo/cron/output/<job_id>/<timestamp>.md (run output)
-  - /root/.hermes/logs/errors.log (root-cause errors)
-  - /root/.hermes/logs/agent.log (agent-level logs)
+  - ~/.hermes/profiles/indigo/cron/jobs.json (job metadata + status)
+  - ~/.hermes/profiles/indigo/cron/output/<job_id>/<timestamp>.md (run output)
+  - ~/.hermes/logs/errors.log (root-cause errors)
+  - ~/.hermes/logs/agent.log (agent-level logs)
 
 Error categories (matched against last_error + logs):
   - google-workspace-mcp-unavailable — MCP server not running / not registered
@@ -46,10 +46,10 @@ logger = logging.getLogger(__name__)
 # Configuration
 # ---------------------------------------------------------------------------
 
-JOBS_JSON = Path("/root/.hermes/profiles/indigo/cron/jobs.json")
-CRON_OUTPUT_DIR = Path("/root/.hermes/profiles/indigo/cron/output")
-ERRORS_LOG = Path("/root/.hermes/logs/errors.log")
-AGENT_LOG = Path("/root/.hermes/logs/agent.log")
+JOBS_JSON = Path("~/.hermes/profiles/indigo/cron/jobs.json")
+CRON_OUTPUT_DIR = Path("~/.hermes/profiles/indigo/cron/output")
+ERRORS_LOG = Path("~/.hermes/logs/errors.log")
+AGENT_LOG = Path("~/.hermes/logs/agent.log")
 
 # Alert thresholds
 CONSECUTIVE_FAILURES_ALERT = 3
