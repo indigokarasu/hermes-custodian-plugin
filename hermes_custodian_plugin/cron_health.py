@@ -46,10 +46,10 @@ logger = logging.getLogger(__name__)
 # Configuration
 # ---------------------------------------------------------------------------
 
-JOBS_JSON = Path("~/.hermes/profiles/indigo/cron/jobs.json")
-CRON_OUTPUT_DIR = Path("~/.hermes/profiles/indigo/cron/output")
-ERRORS_LOG = Path("~/.hermes/logs/errors.log")
-AGENT_LOG = Path("~/.hermes/logs/agent.log")
+JOBS_JSON = Path(os.path.expanduser("~/.hermes/profiles/indigo/cron/jobs.json"))
+CRON_OUTPUT_DIR = Path(os.path.expanduser("~/.hermes/profiles/indigo/cron/output"))
+ERRORS_LOG = Path(os.path.expanduser("~/.hermes/logs/errors.log"))
+AGENT_LOG = Path(os.path.expanduser("~/.hermes/logs/agent.log"))
 
 # Alert thresholds
 CONSECUTIVE_FAILURES_ALERT = 3
