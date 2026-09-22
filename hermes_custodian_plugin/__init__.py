@@ -287,7 +287,6 @@ def _cmd_custodian(raw_args: str) -> str:
         "schedule": _cmd_schedule,
         "confidence": _cmd_confidence,
         "init": _cmd_init,
-        "update": _cmd_update,
         "escalation-runner": _cmd_escalation_runner,
         "help": _cmd_help,
     }
@@ -313,7 +312,6 @@ Subcommands:
   /custodian schedule show       — display scan schedule
   /custodian confidence show     — display confidence scores
   /custodian init                — create storage, register cron jobs
-  /custodian update              — self-update from GitHub
   /custodian escalation-runner   — process escalated Tier 3+ issues
   /custodian help                — this help"""
 
@@ -403,13 +401,6 @@ def _cmd_init(_args: str = "") -> str:
         "status": "initialized",
         "storage_dir": str(storage_dir),
         "journal_dir": str(journal_dir),
-    }, indent=2)
-
-
-def _cmd_update(_args: str = "") -> str:
-    return json.dumps({
-        "status": "update",
-        "note": "Self-update from GitHub — use 'git pull' in plugin directory",
     }, indent=2)
 
 

@@ -1,6 +1,6 @@
 [project]
 name = "hermes-custodian-plugin"
-version = "2.0.0"
+version = "3.0.1"
 description = "Operational monitoring, auto-repair, and escalation for Hermes"
 authors = [{name = "Indigo Karasu", email = "mx.indigo.karasu@gmail.com"}]
 license = {text = "MIT"}
