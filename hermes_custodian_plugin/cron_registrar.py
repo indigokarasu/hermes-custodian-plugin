@@ -1,10 +1,9 @@
 """Cron job registration for Custodian plugin.
 
-Registers 4 cron jobs:
-1. custodian:light  — quick heartbeat scan
-2. custodian:deep   — full 13-step sweep (every 6h)
+Registers 3 cron jobs:
+1. custodian:deep   — full 13-step sweep (every 6h)
+2. custodian:cron-health — cron job health check (4x daily)
 3. custodian:escalation-runner — process escalated issues (weekday mornings)
-4. custodian:update — self-update from GitHub (midnight)
 """
 
 import logging
@@ -29,12 +28,6 @@ CRON_JOBS: List[Dict[str, Any]] = [
         "name": "custodian:escalation-runner",
         "schedule": "*/30 9-17 * * 1-5",
         "prompt": "Run Custodian escalation runner. Read your Custodian plugin skill. Process escalated Tier 3+ issues from issues.jsonl. Use terminal() with heredoc for all file mutations — never read_file on JSONL files (corrupts them), never execute_code (blocked in cron). When running as a cron job, if no escalated issues need processing, respond with exactly '[SILENT]'.",
-        "no_agent": False,
-    },
-    {
-        "name": "custodian:update",
-        "schedule": "0 0 * * *",
-        "prompt": "Run Custodian self-update. Read your Custodian plugin skill for the update procedure. Check GitHub for new commits. Use terminal() with heredoc for all git operations. If already up to date, respond with exactly '[SILENT]'.",
         "no_agent": False,
     },
 ]

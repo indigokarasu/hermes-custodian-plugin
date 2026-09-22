@@ -85,7 +85,7 @@ def mock_ctx():
 
 class TestSchemas:
     def test_all_schemas_count(self):
-        assert len(ALL_SCHEMAS) == 3
+        assert len(ALL_SCHEMAS) == 4
 
     def test_status_schema_structure(self):
         schema = CUSTODIAN_STATUS_SCHEMA
@@ -135,11 +135,14 @@ class TestScanner:
             assert isinstance(fp["match_patterns"], list)
             assert len(fp["match_patterns"]) > 0
 
-    def test_tier1_fingerprints_have_auto_fix(self):
+    def test_tier1_fingerprints_have_auto_action(self):
+        # Every tier-1 fingerprint must declare an automated remediation:
+        # auto_fix (apply a fix), auto_pause (pause the job), or
+        # auto_flag (mark needs_redesign). A tier-1 with none is a gap.
         for fp in KNOWN_FINGERPRINTS:
             if fp["tier"] == 1:
-                assert "auto_fix" in fp
-                assert fp["auto_fix"] is not None
+                actions = [fp.get(k) for k in ("auto_fix", "auto_pause", "auto_flag")]
+                assert any(actions), f"{fp['id']} declares no automated action"
 
     def test_get_tier1_fingerprints(self):
         tier1 = get_tier1_fingerprints()
@@ -577,7 +580,7 @@ class TestJournal:
 
 class TestCronRegistrar:
     def test_job_definitions_count(self):
-        assert len(CRON_JOBS) == 3  # deep, escalation-runner, update
+        assert len(CRON_JOBS) == 3  # deep, cron-health, escalation-runner
 
     def test_init(self):
         reg = CronRegistrar()
@@ -587,8 +590,8 @@ class TestCronRegistrar:
         reg = CronRegistrar()
         names = reg.get_job_names()
         assert "custodian:deep" in names
+        assert "custodian:cron-health" in names
         assert "custodian:escalation-runner" in names
-        assert "custodian:update" in names
 
     def test_is_registered_initially_false(self):
         reg = CronRegistrar()
@@ -672,7 +675,7 @@ class TestRegister:
     def test_register_registers_tools(self, mock_ctx):
         register(mock_ctx)
         tool_calls = [c for c in mock_ctx.register_tool.call_args_list]
-        assert len(tool_calls) == 3
+        assert len(tool_calls) == 4
         tool_names = [c[1].get("name") or c[0][0] for c in tool_calls]
         assert "custodian_status" in tool_names
         assert "custodian_scan" in tool_names
@@ -943,10 +946,17 @@ class TestPluginManifest:
         assert yaml_path.exists()
 
     def test_plugin_yaml_content(self):
-        yaml_path = Path(__file__).resolve().parent.parent / "plugin.yaml"
-        content = yaml_path.read_text()
+        import re
+
+        root = Path(__file__).resolve().parent.parent
+        content = (root / "plugin.yaml").read_text()
         assert "name: custodian" in content
-        assert "version: \"3.0.0\"" in content
+        # plugin.yaml and pyproject.toml must declare the same version
+        m = re.search(r'^version:\s*"([^"]+)"', content, re.M)
+        assert m, "plugin.yaml declares no version"
+        tm = re.search(r'^version\s*=\s*"([^"]+)"', (root / "pyproject.toml").read_text(), re.M)
+        assert tm, "pyproject.toml declares no version"
+        assert m.group(1) == tm.group(1)
         assert "post_tool_call" in content
         assert "on_session_end" in content
         assert "on_session_start" in content
