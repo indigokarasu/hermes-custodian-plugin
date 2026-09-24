@@ -22,11 +22,11 @@ Error categories (matched against last_error + logs):
 
 Auto-remediation:
   - google-workspace-mcp-unavailable → attempt MCP reconnect via gateway restart
-  - consecutive_failures >= AUTO_PAUSE_THRESHOLD → pause job + report
+  - failure_streak >= AUTO_PAUSE_THRESHOLD → pause job + report
   - execute-code-blocked → flag as "needs redesign" (can't auto-fix)
 
 Alerting:
-  - consecutive_failures >= 3 → immediate alert
+  - failure_streak >= 3 → immediate alert
   - healthy job newly flips to error → immediate alert
   - error_count > ERROR_COUNT_THRESHOLD → summary alert
   - daily health line for briefing
@@ -55,6 +55,34 @@ def _get_hermes_home() -> Path:
 # Configuration
 # ---------------------------------------------------------------------------
 
+def _resolve_alert_state() -> Path:
+    home = os.environ.get("HERMES_HOME") or str(Path.home() / ".hermes")
+    state_dir = Path(home) / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    return state_dir / "custodian-cron-alerts.json"
+
+
+def _load_alert_state() -> Dict[str, Any]:
+    """Last-alerted streak per job, so a standing error is reported once — not every run."""
+    try:
+        with open(_resolve_alert_state(), "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_alert_state(state: Dict[str, Any]) -> None:
+    try:
+        path = _resolve_alert_state()
+        tmp = path.with_suffix(".tmp")
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(state, fh, indent=0, sort_keys=True)
+        os.replace(tmp, path)
+    except OSError as exc:
+        logger.warning("could not persist alert state: %s", exc)
+
+
 def _resolve_jobs_json() -> Path:
     return _get_hermes_home() / "cron" / "jobs.json"
 
@@ -71,7 +99,14 @@ def _resolve_agent_log() -> Path:
     return _get_hermes_home() / "logs" / "agent.log"
 
 # Alert thresholds
-CONSECUTIVE_FAILURES_ALERT = 3
+#
+# CONSECUTIVE_FAILURES_ALERT = 1: alert on the FIRST failure of any job. It was 3,
+# which meant a daily job could fail three nights running before anyone heard —
+# and combined with the recovery-state bug below, a job that failed, recovered,
+# and failed again was silent forever. Detection that waits for a third failure is
+# not monitoring. `failure_streak <= 1` (a just-flipped job) is now redundant but
+# kept for clarity.
+CONSECUTIVE_FAILURES_ALERT = 1
 AUTO_PAUSE_THRESHOLD = 5
 ERROR_COUNT_THRESHOLD = 10  # total error jobs before summary alert
 
@@ -209,7 +244,7 @@ def categorize_job_health(jobs: List[Dict[str, Any]]) -> Dict[str, Any]:
             "error": int,
             "paused": int,
             "error_jobs": [...],  # jobs with last_status=error
-            "chronic_jobs": [...],  # consecutive_failures >= 3
+            "chronic_jobs": [...],  # failure_streak >= 3
             "categories": {category_id: [job_names...]},
         }
     """
@@ -227,7 +262,7 @@ def categorize_job_health(jobs: List[Dict[str, Any]]) -> Dict[str, Any]:
         status = job.get("last_status", "unknown")
         enabled = job.get("enabled", True)
         paused_at = job.get("paused_at")
-        consecutive_failures = job.get("consecutive_failures", 0)
+        failure_streak = job.get("failure_streak", 0)
 
         if paused_at:
             result["paused"] += 1
@@ -237,7 +272,7 @@ def categorize_job_health(jobs: List[Dict[str, Any]]) -> Dict[str, Any]:
             result["error"] += 1
             result["error_jobs"].append(job)
 
-            if consecutive_failures >= CONSECUTIVE_FAILURES_ALERT:
+            if failure_streak >= CONSECUTIVE_FAILURES_ALERT:
                 result["chronic_jobs"].append(job)
 
             # Categorize the error
@@ -320,10 +355,10 @@ def attempt_auto_remediation(job: Dict[str, Any], category: Dict[str, Any]) -> D
     cat_id = category.get("id", "unknown")
     job_name = job.get("name", "?")
     job_id = job.get("id", "?")
-    consecutive_failures = job.get("consecutive_failures", 0)
+    failure_streak = job.get("failure_streak", 0)
 
     # Auto-pause chronically failing jobs
-    if consecutive_failures >= AUTO_PAUSE_THRESHOLD:
+    if failure_streak >= AUTO_PAUSE_THRESHOLD:
         return _auto_pause_job(job, category)
 
     # Category-specific remediation
@@ -358,16 +393,16 @@ def _auto_pause_job(job: Dict[str, Any], category: Dict[str, Any]) -> Dict[str, 
     """Pause a chronically failing job to stop cycle burning."""
     job_id = job.get("id", "?")
     job_name = job.get("name", "?")
-    consecutive_failures = job.get("consecutive_failures", 0)
+    failure_streak = job.get("failure_streak", 0)
     cat_desc = category.get("description", "unknown cause")
 
-    reason = f"auto-paused: {consecutive_failures} consecutive failures ({cat_desc})"
+    reason = f"auto-paused: {failure_streak} consecutive failures ({cat_desc})"
 
     # We can't directly modify jobs.json from here (it's managed by the scheduler).
     # Return the action for the caller to execute via cronjob tool.
     return {
         "action": "auto_pause",
-        "result": f"Job '{job_name}' hit {consecutive_failures} consecutive failures. Recommend: cronjob(action='pause', job_id='{job_id}'). Reason: {reason}",
+        "result": f"Job '{job_name}' hit {failure_streak} consecutive failures. Recommend: cronjob(action='pause', job_id='{job_id}'). Reason: {reason}",
         "success": True,  # the recommendation is actionable
         "job_id": job_id,
         "pause_reason": reason,
@@ -430,7 +465,7 @@ def run_cron_health_check(dry_run: bool = False) -> Dict[str, Any]:
             "total": int, "ok": int, "error": int, "paused": int,
             "error_rate": float,
             "alerts": [...],          # jobs needing immediate attention
-            "chronic_jobs": [...],     # consecutive_failures >= 3
+            "chronic_jobs": [...],     # failure_streak >= 3
             "categories": {...},       # error category → [job_names]
             "auto_remediations": [...], # attempted fixes
             "daily_health_line": str,  # one-liner for briefing
@@ -445,11 +480,35 @@ def run_cron_health_check(dry_run: bool = False) -> Dict[str, Any]:
 
     alerts = []
     auto_remediations = []
+    alerted_this_pass = False
+    alert_state = _load_alert_state()
+
+    # Re-arm every job that is NOT currently failing.
+    #
+    # The loop below walks only `health["error_jobs"]`, so a job's state entry was
+    # NEVER cleared when it recovered. Consequence: fail (state=1) -> recover ->
+    # fail again (streak=1) meant `failure_streak != last_streak` was `1 != 1` and
+    # the second, genuinely NEW outage was silent — and stayed silent for every
+    # later failure, because the stored baseline never moved. A job that fails
+    # intermittently would alert ONCE EVER. Dropping the threshold alone does not
+    # fix this; both changes are required.
+    #
+    # Recording 0 on recovery is what keeps the edge-trigger honest: the next flip
+    # to error is a change from 0, so it reports once, as intended.
+    if not dry_run:
+        failing_ids = {j.get("id") for j in health["error_jobs"]}
+        for job in jobs:
+            if job.get("id") in failing_ids:
+                continue
+            state_key = f"{job.get('id')}::{job.get('name', '?')}"
+            if alert_state.get(state_key) not in (None, 0):
+                alert_state[state_key] = 0
+                alerted_this_pass = True
 
     # Check each error job
     for job in health["error_jobs"]:
         category = categorize_error(job)
-        consecutive_failures = job.get("consecutive_failures", 0)
+        failure_streak = job.get("failure_streak", 0)
         job_name = job.get("name", "?")
         last_error = (job.get("last_error") or "")[:200]
 
@@ -459,17 +518,32 @@ def run_cron_health_check(dry_run: bool = False) -> Dict[str, Any]:
             "job_id": job.get("id", "?"),
             "category": category["id"],
             "category_description": category["description"],
-            "consecutive_failures": consecutive_failures,
+            "failure_streak": failure_streak,
             "last_error": last_error,
             "auto_fixable": category.get("auto_fixable", False),
         }
 
-        # Determine if this needs immediate notification
-        is_new_failure = consecutive_failures <= 1  # just flipped
-        is_chronic = consecutive_failures >= CONSECUTIVE_FAILURES_ALERT
+        # Determine if this needs immediate notification.
+        #
+        # Edge-triggered, NOT level-triggered, and the state is a REPORTED FLAG
+        # (0 = not reported / recovered, >=1 = this outage already reported) rather
+        # than the raw streak.
+        #
+        # Keying on the raw streak is wrong twice over. With
+        # CONSECUTIVE_FAILURES_ALERT = 1 the old `is_chronic` branch
+        # (`streak >= threshold`) was true for EVERY streak value, so a standing
+        # failure re-alerted on every pass; and even comparing
+        # `failure_streak != last_streak` re-fires as the streak climbs 1->2->3 for
+        # what is the SAME outage. Record "reported" instead, and let the re-arm pass
+        # above reset it to 0 on recovery so the next flip alerts exactly once.
+        state_key = f"{alert.get('job_id')}::{job_name}"
+        already_reported = bool(alert_state.get(state_key, 0))
 
-        if is_new_failure or is_chronic:
+        if not already_reported and failure_streak >= 1:
             alerts.append(alert)
+            if not dry_run:
+                alert_state[state_key] = 1
+            alerted_this_pass = True
 
         # Attempt auto-remediation
         if not dry_run:
@@ -479,6 +553,9 @@ def run_cron_health_check(dry_run: bool = False) -> Dict[str, Any]:
                     "job_name": job_name,
                     **remediation,
                 })
+
+    if not dry_run and alerted_this_pass:
+        _save_alert_state(alert_state)
 
     # Build daily health line
     daily_line = (
@@ -524,7 +601,7 @@ def format_health_report(report: Dict[str, Any]) -> str:
         lines.append(f"ALERTS ({len(report['alerts'])}):")
         for alert in report["alerts"]:
             lines.append(f"  [{alert['category']}] {alert['job_name']}")
-            lines.append(f"    Failures: {alert['consecutive_failures']} | Auto-fixable: {alert['auto_fixable']}")
+            lines.append(f"    Failures: {alert['failure_streak']} | Auto-fixable: {alert['auto_fixable']}")
             lines.append(f"    Error: {alert['last_error'][:120]}")
             lines.append("")
 

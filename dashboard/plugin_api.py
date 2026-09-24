@@ -253,7 +253,6 @@ def _get_system_counts() -> Dict[str, Any]:
         pass
     job_candidates = [
         hermes_home / "profiles" / active / "cron" / "jobs.json",
-        hermes_home / "profiles" / "indigo" / "cron" / "jobs.json",
         hermes_home / "cron" / "jobs.json",
     ]
     for jobs_path in job_candidates:

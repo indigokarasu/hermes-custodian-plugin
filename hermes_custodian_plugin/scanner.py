@@ -4,6 +4,7 @@ Each fingerprint has: id, description, tier, match_patterns, source, auto_fix.
 Fingerprints match against gateway logs, cron run logs, skill journals, and OCAS data directories.
 """
 
+import datetime
 import json
 import logging
 import os
@@ -161,25 +162,35 @@ KNOWN_FINGERPRINTS: List[Dict[str, Any]] = [
     },
     {
         "id": "oc_cron_stale_empty_error",
-        "description": "Stale error state: status=error but last_error empty and consecutive_failures=0",
+        "description": "Stale error state: status=error but last_error empty and failure_streak=0",
         "tier": 1,
         "match_patterns": [r"status.*error.*last_error.*(null|empty)"],
         "source": "cron_log",
         "auto_fix": "Pause and resume the job to reset stale scheduler state",
     },
     {
-        "id": "oc_cron_consecutive_failures",
+        "id": "oc_cron_failure_streak",
         "description": "Cron job has 3+ consecutive failures — needs investigation or auto-pause",
         "tier": 1,
-        "match_patterns": [r"consecutive_failures.*[3-9]", r"consecutive_failures.*1[0-9]"],
+        "match_patterns": [r"failure_streak.*[3-9]", r"failure_streak.*1[0-9]"],
         "source": "cron_log",
-        "auto_pause": "Pause job via cronjob(action=pause) if consecutive_failures >= 5",
+        "auto_pause": "Pause job via cronjob(action=pause) if failure_streak >= 5",
     },
     {
         "id": "oc_cron_execute_code_in_cron",
         "description": "Cron job attempted execute_code — blocked in cron mode, needs redesign",
         "tier": 1,
-        "match_patterns": [r"execute_code.*blocked", r"cron_mode.*deny", r"approval_pending.*execute_code"],
+        # Require the CRON-MODE denial text specifically. A bare
+        # `execute_code.*blocked` also matches an interactive session whose
+        # approve prompt timed out ("BLOCKED: execute_code script timed out
+        # without user response") — correct behaviour, not a design flaw — and
+        # it was reported as a Tier-1 cron defect. The distinctive cron-mode
+        # wording below is what actually identifies this condition.
+        "match_patterns": [
+            r"execute_code runs arbitrary local Python.*Cron jobs run without a user present",
+            r"cron_mode.*deny",
+            r"approval_pending.*execute_code",
+        ],
         "source": "cron_log",
         "auto_flag": "Flag as needs_redesign — replace execute_code with terminal() or no_agent script",
     },
@@ -215,7 +226,18 @@ KNOWN_FINGERPRINTS: List[Dict[str, Any]] = [
         "id": "oc_cron_timeout",
         "description": "Cron job hit idle or upstream timeout",
         "tier": 2,
-        "match_patterns": [r"idle for.*limit.*s", r"TimeoutError", r"timed out after", r"upstream idle timeout"],
+        # A bare `timed out after` matched 126 lines, 111 of which were
+        # HOOK-CALLBACK timeouts ("Hook 'x' callback timed out after 30s") —
+        # a plugin-slowness condition with its own remedy, not a cron job
+        # timing out. Anchoring on the TOOL-EXECUTOR emitter is what actually
+        # distinguishes a job's tool timing out from a plugin hook timing out;
+        # a bare cron-session id does not (hooks fire inside cron sessions too).
+        "match_patterns": [
+            r"idle for.*limit.*s",
+            r"TimeoutError",
+            r"upstream idle timeout",
+            r"agent\.tool_executor.*timed out after",
+        ],
         "source": "cron_log",
     },
     {
@@ -261,13 +283,9 @@ KNOWN_FINGERPRINTS: List[Dict[str, Any]] = [
 
 # Tier 2 fingerprints (detected but NOT auto-fixed)
 NON_FATAL_FINGERPRINTS: List[Dict[str, Any]] = [
-    {
-        "id": "oc_cron_timeout",
-        "description": "Cron job hit idle timeout",
-        "tier": 2,
-        "match_patterns": [r"idle for.*limit.*s", r"TimeoutError.*Cron job", r"timed out after"],
-        "source": "cron_log",
-    },
+    # NOTE: oc_cron_timeout is intentionally NOT duplicated here — it already exists in
+    # KNOWN_FINGERPRINTS. Two entries with the same id made scan_text emit the SAME issue
+    # twice per scan (double-reporting in every report and journal write).
     {
         "id": "oc_http_429_rate_limit",
         "description": "HTTP 429 rate limit from LLM provider",
@@ -379,35 +397,173 @@ def match_fingerprint(text: str, fingerprint: Dict[str, Any]) -> Optional[str]:
     return None
 
 
-def scan_text(text: str, fingerprints: Optional[List[Dict]] = None) -> ScanResult:
-    """Scan text against all fingerprints. Returns matched issues."""
+#: Lines that *report on* a fingerprint rather than being one. Custodian's own scans,
+#: dashboards, journal dumps and cron reports quote matched patterns verbatim, so a naive
+#: substring scan re-discovers its own output on the next run and reports a fixed issue as
+#: still live. Skip any line that carries one of these markers.
+#: NOTE: do NOT add a bare "custodian:" marker here. Cron logs name jobs like
+#: 'custodian:update', so that marker suppresses real failures — verified: it hid
+#: 3 of 3 genuine "Job 'custodian:X' failed" lines. The markers below are specific
+#: to custodian's *report* text and still catch genuine echo lines.
+_ECHO_MARKERS = (
+    "oc_cron_scan",
+    "fingerprint_id",
+    "FINGERPRINT:",
+    "match_patterns",
+    "evidence=",
+    "auto_fix",
+)
+
+#: Path fragments whose contents must never be scanned as evidence (the scanner reads its
+#: own storage/journal/output directories back).
+_ECHO_PATHS = (
+    "commons/data/ocas-custodian",
+    "commons/journals/ocas-custodian",
+    "plugins/custodian/",
+    "cron/output/",
+)
+
+
+def _is_echo_line(line: str) -> bool:
+    """True when a log line is a report *about* a fingerprint, not an occurrence of one."""
+    low = line.lower()
+    return any(marker.lower() in low for marker in _ECHO_MARKERS)
+
+
+def is_echo_path(path: Any) -> bool:
+    """True when a file lives in a directory the scanner itself writes to."""
+    p = str(path).replace("\\", "/").lower()
+    return any(frag in p for frag in _ECHO_PATHS)
+
+
+def _first_matching_line(text: str, pattern: str) -> Optional[str]:
+    """Return the first line that actually matches *pattern* (so evidence is attributable)."""
+    try:
+        rx = re.compile(pattern, re.IGNORECASE)
+    except re.error:
+        return None
+    for line in text.splitlines():
+        if rx.search(line) and not _is_echo_line(line):
+            return line.strip()
+    return None
+
+
+def _line_recency_ok(line: str, max_age_hours: Optional[float]) -> bool:
+    """True when a log line is recent enough to be worth reporting.
+
+    Logs are append-only and custodian scans the whole tail every cycle, so without a
+    recency window a single old error re-reports on every run forever.
+
+    Continuation lines (traceback bodies, multi-line exception text) carry NO timestamp
+    of their own. Failing open on those — as this once did — let a 3-day-old Gemini 429
+    keep reporting as live, because the pattern matched a continuation line rather than
+    the dated header above it. Callers must therefore resolve the owning timestamp first
+    and pass it in via ``_LineFilter``; a bare line with no context is treated as stale.
+    """
+    if not max_age_hours or max_age_hours <= 0:
+        return True
+    ts = _parse_line_timestamp(line)
+    if ts is None:
+        # No timestamp and no context: cannot prove recency, so do not report it.
+        return False
+    age = (_dt_now() - ts).total_seconds() / 3600.0
+    return age <= max_age_hours
+
+
+def _parse_line_timestamp(line: str) -> Optional[datetime.datetime]:
+    """Parse a leading ``YYYY-MM-DD HH:MM:SS`` from a log line, else None."""
+    import datetime as _dt
+    m = re.match(r"^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})", line.strip())
+    if not m:
+        return None
+    try:
+        return _dt.datetime.strptime(f"{m.group(1)} {m.group(2)}", "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return None
+
+
+def _dt_now():
+    import datetime as _dt
+    return _dt.datetime.now()
+
+
+def _recency_filter_lines(text: str, max_age_hours: Optional[float]) -> str:
+    """Drop echo lines and stale lines, giving continuation lines their owner's timestamp.
+
+    Walks the log in order, remembering the most recent dated header. A line without its
+    own timestamp inherits that header's recency, so a traceback body is judged by when
+    its error actually occurred rather than being kept forever.
+    """
+    import datetime as _dt
+    keep = []
+    current_ts: "Optional[_dt.datetime]" = None
+    for line in text.splitlines():
+        ts = _parse_line_timestamp(line)
+        if ts is not None:
+            current_ts = ts
+        if _is_echo_line(line):
+            continue
+        if max_age_hours and max_age_hours > 0:
+            if current_ts is None:
+                continue
+            if (_dt.datetime.now() - current_ts).total_seconds() / 3600.0 > max_age_hours:
+                continue
+        keep.append(line)
+    return "\n".join(keep)
+
+
+def scan_text(text: str, fingerprints: Optional[List[Dict]] = None,
+              max_age_hours: Optional[float] = None) -> ScanResult:
+    """Scan text against all fingerprints. Returns matched issues.
+
+    Evidence is the specific matching line, not the head of the blob — otherwise every
+    fingerprint in a multi-match scan reports the same first-500-chars and the report is
+    unactionable. Lines that merely *quote* a pattern (custodian's own reports) are skipped
+    so a repaired issue does not resurrect itself on the next pass. ``max_age_hours`` drops
+    stale matches — including continuation lines, which inherit the timestamp of the dated
+    header above them — so an already-seen old error stops reporting as a live problem.
+    """
     result = ScanResult()
     if fingerprints is None:
         fingerprints = ALL_FINGERPRINTS
 
+    # Pre-filter echo + stale lines once; every fingerprint matches against clean text.
+    clean = _recency_filter_lines(text, max_age_hours)
+    if not clean:
+        return result
+
     for fp in fingerprints:
-        matched = match_fingerprint(text, fp)
+        matched = match_fingerprint(clean, fp)
         if matched:
+            evidence = _first_matching_line(clean, matched) or ""
             result.add_issue(
                 fingerprint_id=fp["id"],
                 source=fp.get("source", "unknown"),
-                evidence=text[:500],
+                evidence=evidence[:500],
                 tier=fp.get("tier", 3),
                 auto_fix=fp.get("auto_fix"),
             )
     return result
 
 
-def scan_files(file_paths: List[Path], fingerprints: Optional[List[Dict]] = None) -> ScanResult:
-    """Scan multiple files against fingerprints. Concatenates results."""
+def scan_files(file_paths: List[Path], fingerprints: Optional[List[Dict]] = None,
+               max_age_hours: Optional[float] = None) -> ScanResult:
+    """Scan multiple files against fingerprints. Concatenates results.
+
+    Files inside custodian's own storage/journal/output trees are skipped: re-reading them
+    turns previous findings into fresh evidence (the stale-echo bug). ``max_age_hours``
+    drops stale matches so a resolved error stops re-reporting every cycle.
+    """
     combined = ScanResult()
     for path in file_paths:
         try:
             if not path.exists():
                 combined.errors.append(f"File not found: {path}")
                 continue
+            if is_echo_path(path):
+                continue
             text = path.read_text(encoding="utf-8", errors="replace")
-            result = scan_text(text, fingerprints)
+            result = scan_text(text, fingerprints, max_age_hours=max_age_hours)
             combined.issues.extend(result.issues)
             combined.fingerprints_matched.extend(result.fingerprints_matched)
             combined.errors.extend(result.errors)

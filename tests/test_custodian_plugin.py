@@ -37,6 +37,7 @@ from hermes_custodian_plugin.scanner import (
     KNOWN_FINGERPRINTS,
     NON_FATAL_FINGERPRINTS,
     ScanResult,
+    _is_echo_line,
     count_fingerprints,
     get_fingerprint_by_id,
     get_tier1_fingerprints,
@@ -230,6 +231,85 @@ class TestScanner:
     def test_non_fingerprints_are_tier2_plus(self):
         for fp in NON_FATAL_FINGERPRINTS:
             assert fp["tier"] >= 2
+
+    # --- Regression: over-broad patterns matched unrelated conditions ---
+    # Each of these was a live false positive that reached the user as an
+    # actionable-looking finding. The pattern must match the real condition
+    # and must NOT match the lookalike that triggered the false report.
+
+    def test_execute_code_fingerprint_ignores_approval_timeout(self):
+        """oc_cron_execute_code_in_cron must not fire on an interactive timeout.
+
+        A bare `execute_code.*blocked` matched an interactive session whose
+        approve prompt timed out — correct behaviour reported as a Tier-1 cron
+        design flaw.
+        """
+        fp = get_fingerprint_by_id("oc_cron_execute_code_in_cron")
+        approval_timeout = (
+            '2026-09-23 12:28:15,834 WARNING [20260923_071655_6fcdb2] '
+            'agent.tool_executor: Tool execute_code returned error (60.99s): '
+            '{"status": "error", "error": "BLOCKED: execute_code script timed out '
+            'without user response. The user has NOT consented to running this code."}'
+        )
+        assert match_fingerprint(approval_timeout, fp) is None
+
+        cron_block = (
+            '2026-09-21 09:01:47,009 WARNING [cron_fcd2a7b78750_20260921_090102] '
+            'agent.tool_executor: Tool execute_code returned error (0.00s): '
+            '{"error": "BLOCKED: execute_code runs arbitrary local Python (including '
+            'subprocess calls that bypass shell-string approval checks). Cron jobs run '
+            'without a user present to approve it"}'
+        )
+        assert match_fingerprint(cron_block, fp) is not None
+
+    def test_timeout_fingerprint_ignores_hook_callback_timeout(self):
+        """oc_cron_timeout must not fire on a plugin hook-callback timeout.
+
+        A bare `timed out after` matched 111 hook-callback timeouts out of 126
+        hits — a plugin-slowness condition with a different remedy.
+        """
+        fp = get_fingerprint_by_id("oc_cron_timeout")
+        hook_timeout = (
+            '2026-09-20 16:17:30,078 WARNING [cron_c25d8c6a5602_20260920_161558] '
+            'hermes_cli.plugins: Hook \'transform_llm_output\' callback '
+            '_handle_transform_llm_output timed out after 30s — skipping'
+        )
+        assert match_fingerprint(hook_timeout, fp) is None
+
+        job_timeout = (
+            '2026-09-23 02:32:42,663 WARNING [cron_c25d8c6a5602_20260923_023046] '
+            'agent.tool_executor: Tool mcp__filesystem__search_files returned error '
+            '(60.01s): {"error": "MCP call timed out after 60.0s"}'
+        )
+        assert match_fingerprint(job_timeout, fp) is not None
+
+    def test_scanner_skips_custodian_own_output(self):
+        """The scanner must not re-report its own previous findings."""
+        own_report = (
+            '2026-09-21 13:02:08,479 WARNING [cron_cf8b2683e98b_20260921_130103] '
+            'agent.tool_executor: Tool terminal returned error (1.42s): {"output": '
+            '"=== CUSTODIAN LIGHT SCAN - ERROR FINGERPRINTS ===\\n'
+            'FINGERPRINT: oc_cron_rate_limit_429\\n  Tier: 2"}'
+        )
+        assert _is_echo_line(own_report) is True
+
+    def test_recency_filter_drops_stale_continuation_lines(self):
+        """A timestamp-less traceback body must inherit its header's age.
+
+        Failing open on continuation lines let a 3-day-old 429 keep reporting
+        as live: the pattern matched the exception body, which carries no
+        timestamp of its own.
+        """
+        text = (
+            "2020-01-01 10:00:00,000 ERROR cron_x_1 agent.chat_completion: failed\n"
+            "agent.gemini_native_adapter.GeminiAPIError: Gemini HTTP 429 "
+            "(RESOURCE_EXHAUSTED): exceeded your quota\n"
+        )
+        fp = {"id": "t", "match_patterns": [r"Gemini HTTP 429"], "tier": 2, "source": "x"}
+        # Windowed: the dated header is years old, so the whole block goes.
+        assert len(scan_text(text, [fp], max_age_hours=24).issues) == 0
+        # Unwindowed: the pattern is still findable.
+        assert len(scan_text(text, [fp]).issues) == 1
 
     def test_storage_dir_uses_env_var(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):

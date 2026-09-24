@@ -37,11 +37,13 @@ def _get_hermes_home() -> Path:
 # Lifecycle hooks
 # ===========================================================================
 
-def _hook_post_tool_call(ctx, tool_name: str, args: dict, result: Any, **kwargs) -> None:
+def _hook_post_tool_call(ctx=None, tool_name: str = "", args: Optional[dict] = None, result: Any = None, **kwargs) -> None:
     """Passive observation hook — scan tool output for error patterns.
-    
-    Extra kwargs are accepted to stay compatible with evolving hook signatures
-    (e.g., task_id passed by newer Hermes versions).
+
+    ``ctx`` is optional: Hermes dispatches hooks with keyword payloads only
+    (session_id, tool_name, args, result, ...), so a required positional
+    ``ctx`` makes every invocation raise TypeError. Extra kwargs are accepted
+    to stay compatible with evolving hook signatures.
     """
     if not isinstance(result, str):
         return
@@ -60,10 +62,11 @@ def _hook_post_tool_call(ctx, tool_name: str, args: dict, result: Any, **kwargs)
                 continue
 
 
-def _hook_on_session_start(ctx, **kwargs) -> None:
+def _hook_on_session_start(ctx=None, **kwargs) -> None:
     """Session start hook — initialize storage, ensure directories exist.
-    
-    Extra kwargs accepted for forward compatibility.
+
+    ``ctx`` optional for the same reason as ``_hook_post_tool_call``: hooks
+    receive keyword payloads, never a positional ctx.
     """
     storage_dir = get_storage_dir()
     storage_dir.mkdir(parents=True, exist_ok=True)
@@ -72,19 +75,13 @@ def _hook_on_session_start(ctx, **kwargs) -> None:
     logger.debug("Custodian: session start — storage verified")
 
 
-def _hook_on_session_end(ctx, **kwargs) -> None:
-    """Session end hook — write any pending journal entries.
-    
-    Extra kwargs accepted for forward compatibility.
-    """
+def _hook_on_session_end(ctx=None, **kwargs) -> None:
+    """Session end hook — write any pending journal entries."""
     logger.debug("Custodian: session end")
 
 
-def _hook_on_session_reset(ctx, **kwargs) -> None:
-    """Session reset hook — clear transient state.
-    
-    Extra kwargs accepted for forward compatibility.
-    """
+def _hook_on_session_reset(ctx=None, **kwargs) -> None:
+    """Session reset hook — clear transient state."""
     logger.debug("Custodian: session reset — transient state cleared")
 
 
@@ -155,9 +152,10 @@ def _handle_scan(ctx, **kwargs) -> str:
             if log_path.exists():
                 try:
                     text = log_path.read_text(encoding="utf-8", errors="replace")
-                    # Only tail last 500 lines for light scan
+                    # Only tail last 500 lines for light scan, and only report findings
+                    # from the last 24h — an old, already-seen error must not re-report.
                     lines = text.splitlines()[-500:]
-                    result = scan_text("\n".join(lines))
+                    result = scan_text("\n".join(lines), max_age_hours=24)
                     for issue in result.issues:
                         journal.add_observation(
                             fingerprint_id=issue["fingerprint_id"],
