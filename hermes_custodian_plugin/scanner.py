@@ -44,7 +44,18 @@ KNOWN_FINGERPRINTS: List[Dict[str, Any]] = [
         "id": "oc_cron_disabled_transient",
         "description": "Cron job transiently disabled, likely from a failed run or timeout",
         "tier": 1,
-        "match_patterns": [r"job.*disabled", r"enabled.*false"],
+        # Require the log's own SUBJECT to be a job/cron job being disabled. The old
+        # `enabled.*false` was catastrophically broad: it matched the string
+        # `enabled: false` inside ANY pasted config dump, so a dumped platforms:
+        # block (signal/simplex/homeassistant) reported as a Tier-1 cron defect.
+        # Measured: 1 of 1 hits in errors.log was that config dump, 0 of 0 in
+        # gateway.log — a 100% false-positive rate for that pattern.
+        "match_patterns": [
+            r"job\s+disabl",
+            r"job\s+'[^']+'\s+(?:has been |was )?disabl",
+            r"disabl(?:ing|ed)\s+(?:cron\s+)?job\s+'",
+            r"cron job[^\n]*\benabled\b[^\n]*\bfalse\b",
+        ],
         "source": "cron_log",
         "auto_fix": "Re-enable the disabled cron job via hermes cron resume",
     },
@@ -52,7 +63,18 @@ KNOWN_FINGERPRINTS: List[Dict[str, Any]] = [
         "id": "oc_cron_stuck_missed",
         "description": "Cron job missed its scheduled run window",
         "tier": 1,
-        "match_patterns": [r"missed.*schedule", r"stuck.*cron", r"overdue.*run"],
+        # `missed.*schedule` matched Hermes' own SELF-HEALING INFO line ("Job 'x'
+        # missed its scheduled time (grace=450s). Running now; next run
+        # provisionally set to ...") — the scheduler recovering inside its grace
+        # window, reported as a stuck job. The exclusion is anchored with a
+        # negative lookahead at line start because a bare trailing `(?!Running
+        # now)` never fires: re.search retries from later offsets and drops the
+        # lookahead's context.
+        "match_patterns": [
+            r"^(?!.*\b(Running now|re-anchored)\b).*missed its scheduled time",
+            r"^(?!.*\b(Running now|re-anchored)\b).*\bjob\s+'[^']+'\s+is stuck",
+            r"overdue.*\bnot running\b",
+        ],
         "source": "cron_log",
         "auto_fix": "Force-run the missed job",
     },

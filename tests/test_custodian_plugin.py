@@ -293,6 +293,53 @@ class TestScanner:
         )
         assert _is_echo_line(own_report) is True
 
+    def test_disabled_fingerprint_ignores_pasted_config_dump(self):
+        """`enabled: false` in a dumped config block is not a disabled cron job.
+
+        The old `enabled.*false` pattern matched any pasted `platforms:` dump —
+        a real log line quoted config.yaml inside a terminal error and was
+        reported as a Tier-1 cron defect with a "re-enable the job" action.
+        """
+        fp = get_fingerprint_by_id("oc_cron_disabled_transient")
+        assert fp is not None
+        config_dump = (
+            '2026-09-24 22:30:22,294 WARNING [20260924_221834_ca531f] '
+            'agent.tool_executor: Tool terminal returned error (35.40s): {"output": '
+            '"=== full platforms: block (lines 1066-1105) ===\\nplatforms:\\n'
+            '  signal:\\n    enabled: false\\n  simplex:\\n    enabled: false\\n'
+            '  homeassistant:\\n    enabled: false"}'
+        )
+        assert match_fingerprint(config_dump, fp) is None
+
+        real_disable = (
+            "2026-09-01 00:00:00,000 WARNING cron.jobs: "
+            "Job 'foo' was disabled — 5 consecutive failures"
+        )
+        assert match_fingerprint(real_disable, fp) is not None
+
+    def test_stuck_fingerprint_ignores_scheduler_self_heal_line(self):
+        """A job running late inside its grace window is not a stuck job.
+
+        `missed.*schedule` matched Hermes' own self-healing INFO line, so a
+        recovered miss reported as a stuck job. Measured: both hits in agent.log
+        were "Running now; next run provisionally set to" — recovered, not stuck.
+        """
+        fp = get_fingerprint_by_id("oc_cron_stuck_missed")
+        assert fp is not None
+        self_healed = (
+            "2026-09-25 00:44:02,930 INFO cron.jobs: Job 'horza-health-watchdog' "
+            "missed its scheduled time (2026-09-25T00:30:00+04:00, grace=450s). "
+            "Running now; next run provisionally set to: "
+            "2026-09-25T00:45:00+04:00 (re-anchored on completion)"
+        )
+        assert match_fingerprint(self_healed, fp) is None
+
+        genuinely_stuck = (
+            "2026-09-01 00:00:00,000 ERROR cron.scheduler: "
+            "Job 'foo' is stuck (last run never completed)"
+        )
+        assert match_fingerprint(genuinely_stuck, fp) is not None
+
     def test_recency_filter_drops_stale_continuation_lines(self):
         """A timestamp-less traceback body must inherit its header's age.
 
