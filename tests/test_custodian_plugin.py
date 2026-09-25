@@ -283,6 +283,30 @@ class TestScanner:
         )
         assert match_fingerprint(job_timeout, fp) is not None
 
+    def test_timeout_fingerprint_requires_cron_session(self):
+        """oc_cron_timeout is source=cron_log: an interactive timeout is not a cron finding.
+
+        The emitter anchor (`agent.tool_executor ... timed out after`) alone matched any
+        session's tool timeout. A plain interactive line was delivered as a Tier-2 cron
+        finding, sending the reader after a job that was not involved. Measured across the
+        three logs: 11 of 22 tool-executor-timeout hits were NON-cron.
+        """
+        fp = get_fingerprint_by_id("oc_cron_timeout")
+        assert fp is not None
+        interactive = (
+            '2026-09-25 15:37:43,757 WARNING [20260925_153223_cc54cda4] '
+            'agent.tool_executor: Tool terminal returned error (180.35s): '
+            '{"output": "[Command timed out after 180s]", "exit_code": 124, "error": null}'
+        )
+        assert match_fingerprint(interactive, fp) is None
+
+        cron_session = (
+            '2026-09-25 15:37:43,757 WARNING [cron_cf8b2683e98b_20260925_153223] '
+            'agent.tool_executor: Tool terminal returned error (180.35s): '
+            '{"output": "[Command timed out after 180s]", "exit_code": 124, "error": null}'
+        )
+        assert match_fingerprint(cron_session, fp) is not None
+
     def test_scanner_skips_custodian_own_output(self):
         """The scanner must not re-report its own previous findings."""
         own_report = (

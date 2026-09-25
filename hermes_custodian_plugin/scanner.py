@@ -252,13 +252,20 @@ KNOWN_FINGERPRINTS: List[Dict[str, Any]] = [
         # HOOK-CALLBACK timeouts ("Hook 'x' callback timed out after 30s") —
         # a plugin-slowness condition with its own remedy, not a cron job
         # timing out. Anchoring on the TOOL-EXECUTOR emitter is what actually
-        # distinguishes a job's tool timing out from a plugin hook timing out;
-        # a bare cron-session id does not (hooks fire inside cron sessions too).
+        # distinguishes a job's tool timing out from a plugin hook timing out.
+        #
+        # It must ALSO require the `cron_<job_id>_<ts>` session prefix. This
+        # fingerprint is declared `source: cron_log`, but the emitter anchor alone
+        # matched any session's tool timeout: verified, a plain interactive line
+        # (`WARNING [20260925_153223_cc54cda4] ... [Command timed out after 180s]`)
+        # was delivered as a Tier-2 finding, sending the reader after a cron job
+        # that was not involved. Measured across the three logs: 11 of 22
+        # tool-executor-timeout hits were NON-cron — a coin flip.
         "match_patterns": [
-            r"idle for.*limit.*s",
-            r"TimeoutError",
-            r"upstream idle timeout",
-            r"agent\.tool_executor.*timed out after",
+            r"\[cron_[a-f0-9]+_[0-9_]+\][^\n]*idle for.*limit.*s",
+            r"\[cron_[a-f0-9]+_[0-9_]+\][^\n]*TimeoutError",
+            r"\[cron_[a-f0-9]+_[0-9_]+\][^\n]*upstream idle timeout",
+            r"\[cron_[a-f0-9]+_[0-9_]+\][^\n]*agent\.tool_executor[^\n]*timed out after",
         ],
         "source": "cron_log",
     },
