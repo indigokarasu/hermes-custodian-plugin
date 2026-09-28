@@ -760,7 +760,7 @@ class TestCronRegistrar:
         def mock_cronjob(**kwargs):
             calls.append(kwargs)
 
-        registered = reg.register_all(mock_cronjob)
+        registered = reg.register_all(mock_cronjob, strict=False)
         assert len(registered) == 3
         assert len(calls) == 3
 
@@ -772,7 +772,7 @@ class TestCronRegistrar:
         def mock_cronjob(**kwargs):
             calls.append(kwargs)
 
-        registered = reg.register_all(mock_cronjob)
+        registered = reg.register_all(mock_cronjob, strict=False)
         assert len(registered) == 2  # Only 2 new
 
     def test_register_all_handles_errors(self):
@@ -781,8 +781,56 @@ class TestCronRegistrar:
         def mock_cronjob_error(**kwargs):
             raise Exception("cron error")
 
-        registered = reg.register_all(mock_cronjob_error)
+        registered = reg.register_all(mock_cronjob_error, strict=False)
         assert len(registered) == 0
+
+    def test_register_all_refuses_missing_skill(self, tmp_path, monkeypatch):
+        """A job whose procedure skill does not resolve must not be registered.
+
+        The failure this guards is silent: the job still fires, finds no skill, and
+        every prompt carries [SILENT] — so the run looks healthy from the outside.
+        """
+        from hermes_custodian_plugin import cron_registrar as cr
+
+        monkeypatch.setattr(cr, "_skill_search_roots", lambda: [str(tmp_path)])
+
+        reg = cr.CronRegistrar()
+        calls = []
+        with pytest.raises(cr.MissingSkillError):
+            reg.register_all(lambda **kw: calls.append(kw), strict=True)
+        assert calls == [], "no job may be created when its skill is missing"
+
+    def test_register_all_proceeds_when_skill_present(self, tmp_path, monkeypatch):
+        from hermes_custodian_plugin import cron_registrar as cr
+
+        skill_dir = tmp_path / cr._CUSTODIAN_SKILL
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text("# procedure\n")
+        monkeypatch.setattr(cr, "_skill_search_roots", lambda: [str(tmp_path)])
+
+        calls = []
+        registered = cr.CronRegistrar().register_all(lambda **kw: calls.append(kw), strict=True)
+        assert len(registered) == 3
+        assert len(calls) == 3
+
+    def test_skill_exists_handles_categorised_layout(self, tmp_path):
+        from hermes_custodian_plugin import cron_registrar as cr
+
+        d = tmp_path / "devops" / cr._CUSTODIAN_SKILL
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text("# procedure\n")
+        assert cr.skill_exists(cr._CUSTODIAN_SKILL, roots=[str(tmp_path)]) is True
+
+    def test_skill_exists_false_for_missing(self, tmp_path):
+        from hermes_custodian_plugin import cron_registrar as cr
+        assert cr.skill_exists("definitely-not-a-real-skill", roots=[str(tmp_path)]) is False
+
+    def test_every_job_references_the_guard_skill(self):
+        """Guards the rename regression: jobs and the constant must not drift apart."""
+        from hermes_custodian_plugin.cron_registrar import _CUSTODIAN_SKILL
+        for job in CRON_JOBS:
+            assert _CUSTODIAN_SKILL in job["skills"], job["name"]
+            assert _CUSTODIAN_SKILL in job["prompt"], job["name"]
 
     def test_job_has_required_fields(self):
         for job in CRON_JOBS:
@@ -810,7 +858,20 @@ class TestCronRegistrar:
 
 class TestRegister:
     def test_version(self):
-        assert __version__ == "3.0.0"
+        assert __version__ == "3.0.2"
+
+    def test_version_matches_packaging_metadata(self):
+        """The plugin used to report 3.0.0 at runtime while pyproject/plugin.yaml
+        said 3.0.1, so a bug report's version line could not be matched to a
+        release. One version, asserted in three places."""
+        import re
+        from pathlib import Path
+        root = Path(__file__).resolve().parent.parent
+        for name in ("pyproject.toml", "plugin.yaml"):
+            text = (root / name).read_text(encoding="utf-8")
+            found = re.search(r'version\s*[=:]\s*"?(\d+\.\d+\.\d+)"?', text)
+            assert found, f"no version found in {name}"
+            assert found.group(1) == __version__, f"{name} says {found.group(1)}, code says {__version__}"
 
     def test_register_registers_hooks(self, mock_ctx):
         register(mock_ctx)
@@ -848,6 +909,39 @@ class TestSlashCommands:
     def _import_module(self):
         import hermes_custodian_plugin.__init__ as m
         self._mod = m
+
+    def test_cmd_init_reports_missing_cron_skill(self, tmp_path, monkeypatch):
+        """/custodian init must not report success while the cron jobs' skill is absent.
+
+        It is the only moment the wiring is checked. Returning "initialized" hands
+        the caller three jobs that fire on schedule and run with no procedure, and
+        every one of their prompts ends in [SILENT] — so the failure is invisible
+        until someone reads the logs.
+        """
+        from hermes_custodian_plugin import cron_registrar as cr
+        monkeypatch.setattr(cr, "_skill_search_roots", lambda: [str(tmp_path)])
+        monkeypatch.setattr(self._mod, "get_storage_dir", lambda: tmp_path / "store")
+        monkeypatch.setattr(self._mod, "_get_hermes_home", lambda: tmp_path / "home")
+
+        result = json.loads(self._mod._cmd_init())
+        assert result["status"] == "error"
+        assert result["error"] == "missing_skill"
+        assert result["skill"] == cr._CUSTODIAN_SKILL
+        assert result["searched"]
+
+    def test_cmd_init_succeeds_when_cron_skill_resolves(self, tmp_path, monkeypatch):
+        from hermes_custodian_plugin import cron_registrar as cr
+        d = tmp_path / "skills" / "devops" / cr._CUSTODIAN_SKILL
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text("# procedure\n")
+        monkeypatch.setattr(cr, "_skill_search_roots", lambda: [str(tmp_path / "skills")])
+        monkeypatch.setattr(self._mod, "get_storage_dir", lambda: tmp_path / "store")
+        monkeypatch.setattr(self._mod, "_get_hermes_home", lambda: tmp_path / "home")
+
+        result = json.loads(self._mod._cmd_init())
+        assert result["status"] == "initialized"
+        assert result["cron_skill"] == cr._CUSTODIAN_SKILL
+        assert result["cron_skill_status"] == "resolved"
 
     def test_cmd_help(self):
         result = self._mod._cmd_help()
