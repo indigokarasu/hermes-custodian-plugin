@@ -6,7 +6,9 @@ Registers 3 cron jobs:
 3. custodian:escalation-runner — process escalated issues (weekday mornings)
 """
 
+import glob
 import logging
+import os
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -30,6 +32,67 @@ _SILENCE_CLAUSE = (
 # named `custodian` (or `custodian-cron`), only `custodian-health-checks`. The jobs
 # logged `Skill 'custodian' not found` and ran without their procedure.
 _CUSTODIAN_SKILL = "custodian-health-checks"
+
+
+class MissingSkillError(RuntimeError):
+    """Raised when a cron job references a skill that does not resolve.
+
+    A job that loads no procedure does not fail loudly: it runs, finds nothing,
+    and — because every prompt carries the ``[SILENT]`` clause — produces no output
+    at all. The failure is indistinguishable from a healthy quiet run. Refusing to
+    register is the only honest signal available.
+    """
+
+    def __init__(self, skill: str, searched: List[str]):
+        self.skill = skill
+        self.searched = searched
+        super().__init__(
+            f"Cron jobs reference skill '{skill}', which does not resolve. "
+            f"Searched: {', '.join(searched) or '(no search roots available)'}. "
+            f"Install the skill or fix _CUSTODIAN_SKILL; refusing to register jobs "
+            f"that would run with no procedure."
+        )
+
+
+def _skill_search_roots() -> List[str]:
+    """Candidate roots a skill named ``_CUSTODIAN_SKILL`` could live under."""
+    roots = []
+    hermes_home = os.environ.get("HERMES_HOME")
+    if hermes_home:
+        roots.append(os.path.join(hermes_home, "skills"))
+    roots.append(os.path.expanduser("~/.hermes/skills"))
+    roots.append(os.path.expanduser("~/.hermes/profiles/%s/skills" % (os.environ.get("HERMES_PROFILE") or "default",)))
+    # Bundled alongside the installed plugin tree, if the host lays it out that way.
+    roots.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "skills"))
+    return [r for r in roots if r]
+
+
+def skill_exists(skill: str = _CUSTODIAN_SKILL, roots: Optional[List[str]] = None) -> bool:
+    """True when ``skill`` resolves to a directory containing SKILL.md.
+
+    Accepts both the flat (``skills/<name>/SKILL.md``) and categorised
+    (``skills/<category>/<name>/SKILL.md``) layouts the host uses. The
+    categorised form is the common one — skills ship grouped by domain — so it
+    is checked with a real glob, not a path join: ``os.path.join(root, "*", skill,
+    "SKILL.md")`` is never expanded by the filesystem and always misses.
+    """
+    candidates = roots if roots is not None else _skill_search_roots()
+    for root in candidates:
+        if os.path.isfile(os.path.join(root, skill, "SKILL.md")):
+            return True
+        for match in glob.glob(os.path.join(root, "*", skill, "SKILL.md")):
+            if os.path.isfile(match):
+                return True
+    return False
+
+
+def verify_skills() -> None:
+    """Raise MissingSkillError unless every referenced skill resolves."""
+    referenced = {s for job in CRON_JOBS for s in job.get("skills", [])}
+    missing = sorted(s for s in referenced if not skill_exists(s))
+    if missing:
+        raise MissingSkillError(missing[0], _skill_search_roots())
+
 
 CRON_JOBS: List[Dict[str, Any]] = [
     {
@@ -88,14 +151,20 @@ class CronRegistrar:
         if job_name not in self._registered:
             self._registered.append(job_name)
 
-    def register_all(self, cronjob_fn) -> List[str]:
+    def register_all(self, cronjob_fn, strict: bool = True) -> List[str]:
         """Register all jobs using the provided cronjob function.
 
         The cronjob_fn should accept the same kwargs as the cronjob tool:
         action='create', name=..., schedule=..., prompt=..., no_agent=...
 
+        Every job loads a skill as its procedure. If that skill does not resolve,
+        the job still registers and still fires — it just runs with nothing. With
+        strict=True (the default) that is refused up front instead.
+
         Returns list of registered job names.
         """
+        if strict:
+            verify_skills()
         registered = []
         for job in self.jobs:
             name = job["name"]

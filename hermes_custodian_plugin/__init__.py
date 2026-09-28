@@ -18,12 +18,17 @@ from .scanner import ALL_FINGERPRINTS, ScanResult, get_storage_dir, scan_text
 from .classifier import ConfidenceModel
 from .fix_engine import FixEngine
 from .journal import Journal
-from .cron_registrar import CronRegistrar
+from .cron_registrar import (
+    CronRegistrar,
+    MissingSkillError,
+    _CUSTODIAN_SKILL,
+    verify_skills,
+)
 from .cron_health import run_cron_health_check, format_health_report
 
 logger = logging.getLogger(__name__)
 
-__version__ = "3.0.0"
+__version__ = "3.0.2"
 
 
 def _get_hermes_home() -> Path:
@@ -182,6 +187,11 @@ def _handle_scan(ctx, **kwargs) -> str:
         return json.dumps({
             "mode": "deep",
             "status": "deep scan requires full agent context — use /custodian scan deep",
+            "note": "This tool does NOT scan in deep mode. It writes an empty journal and "
+                    "returns this status. The 13-step procedure is carried out by the "
+                    "agent following the custodian-health-checks skill; the "
+                    "custodian:deep cron job must not treat this tool's output as a scan "
+                    "result.",
             "journal": str(journal_path),
         }, indent=2, default=str)
 
@@ -395,10 +405,29 @@ def _cmd_init(_args: str = "") -> str:
         fpath = storage_dir / fname
         if not fpath.exists():
             fpath.touch()
+    # Refuse to hand back a clean "initialized" when the cron jobs we are about to
+    # register load a skill that does not exist. Without this the caller wires up
+    # three jobs that fire on schedule and run with no procedure — silently, because
+    # every prompt carries the [SILENT] clause.
+    try:
+        verify_skills()
+        skill_status = "resolved"
+    except MissingSkillError as e:
+        return json.dumps({
+            "status": "error",
+            "error": "missing_skill",
+            "message": str(e),
+            "skill": e.skill,
+            "searched": e.searched,
+            "hint": "Install the skill, or point _CUSTODIAN_SKILL at a skill that "
+                    "exists, then re-run /custodian init.",
+        }, indent=2)
     return json.dumps({
         "status": "initialized",
         "storage_dir": str(storage_dir),
         "journal_dir": str(journal_dir),
+        "cron_skill": _CUSTODIAN_SKILL,
+        "cron_skill_status": skill_status,
     }, indent=2)
 
 
