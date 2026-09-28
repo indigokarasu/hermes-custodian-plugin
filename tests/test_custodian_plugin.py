@@ -1011,12 +1011,20 @@ class TestSlashCommands:
             data = json.loads(result)
             assert "fingerprints_tracked" in data
 
-    def test_cmd_init(self, tmp_storage):
+    def test_cmd_init(self, tmp_storage, tmp_path, monkeypatch):
+        # _cmd_init now verifies the cron jobs' procedure skill before reporting
+        # success, so the skill root has to resolve for this happy-path test.
+        from hermes_custodian_plugin import cron_registrar as cr
+        d = tmp_path / "skills" / "devops" / cr._CUSTODIAN_SKILL
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text("# procedure\n")
+        monkeypatch.setattr(cr, "_skill_search_roots", lambda: [str(tmp_path / "skills")])
         with patch("hermes_custodian_plugin.__init__.get_storage_dir", return_value=tmp_storage):
             with patch("hermes_custodian_plugin.__init__._get_hermes_home", return_value=tmp_storage.parent.parent):
                 result = self._mod._cmd_init()
                 data = json.loads(result)
                 assert data["status"] == "initialized"
+                assert data["cron_skill_status"] == "resolved"
 
     def test_cmd_escalation_runner(self, tmp_storage):
         with patch("hermes_custodian_plugin.__init__.get_storage_dir", return_value=tmp_storage):
