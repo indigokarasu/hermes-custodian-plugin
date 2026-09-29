@@ -1,21 +1,19 @@
 name: Repository discoverability bootstrap
 on:
+  workflow_dispatch:
   push:
-    branches: [main]
+    paths:
+      - .github/workflows/discoverability-bootstrap.yml
 permissions:
   contents: write
   issues: write
 jobs:
-  metadata:
+  discoverability:
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
     steps:
-      - name: Repository description and topics
-        run: |
-          gh api --method PATCH "repos/$REPO" -f description='Operational monitoring, auto-repair, and escalation plugin for Hermes Agent. Monitors gateway logs, cron jobs, skill journals, and OCAS data directories.'
-          gh api --method PUT "repos/$REPO/topics" -H "Accept: application/vnd.github+json" -F 'names[]=agent' -F 'names[]=auto-repair' -F 'names[]=hermes-agent' -F 'names[]=monitoring' -F 'names[]=operational' -F 'names[]=plugin' -F 'names[]=python' -F 'names[]=self-healing'
       - name: Standard labels
         continue-on-error: true
         run: |
