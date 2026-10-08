@@ -17,14 +17,18 @@ CUSTODIAN_SCAN_SCHEMA = {
     "type": "function",
     "function": {
         "name": "custodian_scan",
-        "description": "Run a Custodian scan. Use 'light' for quick check (tail log, cron registry, failed fixes). Use 'deep' for full 13-step sweep (activity model, schedule optimization, skill conformance, repair pass).",
+        "description": "Run a Custodian scan. 'light' = tail of the recent logs against the fingerprint registry (fast). 'deep' = full 13-step sweep of the installation (all recent logs, cron health, job references, data hygiene, gateway/process state, local core patches, skills, issues, repair dry-run, escalations) returning a per-step report. Repairs stay in dry-run unless apply=true.",
         "parameters": {
             "type": "object",
             "properties": {
                 "mode": {
                     "type": "string",
                     "enum": ["light", "deep"],
-                    "description": "Scan mode: 'light' for quick heartbeat check, 'deep' for full sweep.",
+                    "description": "Scan mode: 'light' for a quick heartbeat check, 'deep' for the full 13-step sweep.",
+                },
+                "apply": {
+                    "type": "boolean",
+                    "description": "deep only: apply the Tier 1 repairs instead of listing them (default false = dry-run).",
                 },
             },
             "required": ["mode"],

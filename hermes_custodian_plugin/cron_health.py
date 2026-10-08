@@ -589,15 +589,21 @@ def run_cron_health_check(dry_run: bool = False) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def format_health_report(report: Dict[str, Any]) -> str:
-    """Format a health report as human-readable text."""
+    """Format a health report as human-readable text.
+
+    A install with no jobs.json yields a report without the usual keys (load_jobs returns an
+    empty list): read them with defaults so the formatter never raises KeyError.
+    """
     lines = []
-    lines.append(f"Cron Health Report — {report['timestamp']}")
+    lines.append(f"Cron Health Report — {report.get('timestamp', 'n/a')}")
     lines.append(f"{'='*60}")
-    lines.append(f"Total: {report['total']} | Ok: {report['ok']} | Error: {report['error']} | Paused: {report['paused']}")
-    lines.append(f"Error rate: {report['error_rate']:.1%}")
+    lines.append(
+        f"Total: {report.get('total', 0)} | Ok: {report.get('ok', 0)} | "
+        f"Error: {report.get('error', 0)} | Paused: {report.get('paused', 0)}")
+    lines.append(f"Error rate: {report.get('error_rate', 0.0):.1%}")
     lines.append("")
 
-    if report["alerts"]:
+    if report.get("alerts"):
         lines.append(f"ALERTS ({len(report['alerts'])}):")
         for alert in report["alerts"]:
             lines.append(f"  [{alert['category']}] {alert['job_name']}")
@@ -605,18 +611,18 @@ def format_health_report(report: Dict[str, Any]) -> str:
             lines.append(f"    Error: {alert['last_error'][:120]}")
             lines.append("")
 
-    if report["auto_remediations"]:
+    if report.get("auto_remediations"):
         lines.append(f"AUTO-REMEDIATION ATTEMPTS ({len(report['auto_remediations'])}):")
         for rem in report["auto_remediations"]:
-            lines.append(f"  {rem['job_name']}: {rem['action']} — {rem['result']}")
+            lines.append(f"  {rem.get('job_name', '?')}: {rem.get('action', '?')} — {rem.get('result', '')}")
         lines.append("")
 
-    if report["categories"]:
+    if report.get("categories"):
         lines.append("ERROR CATEGORIES:")
         for cat_id, job_names in report["categories"].items():
             lines.append(f"  {cat_id}: {', '.join(job_names)}")
         lines.append("")
 
-    lines.append(f"DAILY: {report['daily_health_line']}")
+    lines.append(f"DAILY: {report.get('daily_health_line', 'cron registry unavailable')}")
 
     return "\n".join(lines)
