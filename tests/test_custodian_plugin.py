@@ -982,10 +982,12 @@ class TestSlashCommands:
             assert data["mode"] == "light"
 
     def test_cmd_scan_deep(self, tmp_storage):
+        # `scan deep` runs the real sweep and returns the human-readable report (the JSON
+        # placeholder it used to return was removed).
         with patch("hermes_custodian_plugin.__init__.get_storage_dir", return_value=tmp_storage):
             result = self._mod._cmd_scan("deep")
-            data = json.loads(result)
-            assert data["mode"] == "deep"
+            assert "Deep scan custodian" in result
+            assert "13/13" in result
 
     def test_cmd_repair_auto(self, tmp_storage):
         with patch("hermes_custodian_plugin.__init__.get_storage_dir", return_value=tmp_storage):

@@ -94,7 +94,7 @@ def _hook_on_session_reset(ctx=None, **kwargs) -> None:
 # Tool handlers
 # ===========================================================================
 
-def _handle_status(ctx, **kwargs) -> str:
+def _handle_status(args, **kwargs) -> str:
     """custodian_status — show plugin status."""
     storage_dir = get_storage_dir()
     cm = ConfidenceModel(storage_dir)
@@ -142,11 +142,27 @@ def _handle_status(ctx, **kwargs) -> str:
     return json.dumps(status, indent=2)
 
 
-def _handle_scan(ctx, **kwargs) -> str:
-    """custodian_scan — run a scan (light or deep)."""
-    mode = kwargs.get("mode", "light")
+def _handle_scan(args, **kwargs) -> str:
+    """custodian_scan — 'light' (log tail) or 'deep' (full sweep).
+
+    HARNESS CONTRACT: ``tools/registry.py::dispatch`` calls
+    ``entry.handler(args, **context_kwargs)`` — the argument dict arrives POSITIONALLY.
+    A ``(ctx, **kwargs)`` signature therefore drops EVERY parameter (the dict lands in
+    ``ctx`` and ``kwargs`` stays empty), which made `mode` always fall back to "light".
+    """
+    opts = args if isinstance(args, dict) else {}
+    mode = str(opts.get("mode") or kwargs.get("mode") or "light").lower()
+    apply_fixes = bool(opts.get("apply", False)) or bool(kwargs.get("apply", False))
     storage_dir = get_storage_dir()
     journal = Journal()
+
+    if mode == "deep":
+        try:
+            from .deep_scan import run_deep_scan, format_deep_report
+        except ImportError:  # loaded by file path, outside the package
+            from deep_scan import run_deep_scan, format_deep_report  # type: ignore
+        return format_deep_report(
+            run_deep_scan(storage_dir=storage_dir, apply_fixes=apply_fixes))
 
     if mode == "light":
         # Light scan: check gateway log tail, cron registry
@@ -181,31 +197,25 @@ def _handle_scan(ctx, **kwargs) -> str:
             "entries": journal.get_entries()[:20],  # limit output
         }, indent=2, default=str)
 
-    else:
-        # Deep scan placeholder — full 13-step procedure
-        journal_path = journal.write()
-        return json.dumps({
-            "mode": "deep",
-            "status": "deep scan requires full agent context — use /custodian scan deep",
-            "note": "This tool does NOT scan in deep mode. It writes an empty journal and "
-                    "returns this status. The 13-step procedure is carried out by the "
-                    "agent following the custodian-health-checks skill; the "
-                    "custodian:deep cron job must not treat this tool's output as a scan "
-                    "result.",
-            "journal": str(journal_path),
-        }, indent=2, default=str)
+    # Unknown mode: say so rather than pretend a scan happened.
+    return json.dumps({
+        "mode": mode,
+        "status": f"unknown mode {mode!r} — accepted values: 'light', 'deep'",
+    }, indent=2, default=str)
 
 
-def _handle_cron_health(ctx, **kwargs) -> str:
-    """custodian_cron_health — run cron health check."""
-    dry_run = kwargs.get("dry_run", False)
-    report = run_cron_health_check(dry_run=dry_run)
+def _handle_cron_health(args, **kwargs) -> str:
+    """custodian_cron_health — args arrive POSITIONALLY; dry-run is the default."""
+    opts = args if isinstance(args, dict) else {}
+    dry_run = opts.get("dry_run", kwargs.get("dry_run", True))
+    report = run_cron_health_check(dry_run=bool(dry_run))
     return format_health_report(report)
 
 
-def _handle_issues(ctx, **kwargs) -> str:
-    """custodian_issues — list, resolve, or summarize issues."""
-    action = kwargs.get("action", "list")
+def _handle_issues(args, **kwargs) -> str:
+    """custodian_issues — list / resolve / summary (args arrive POSITIONALLY)."""
+    opts = args if isinstance(args, dict) else {}
+    action = str(opts.get("action") or kwargs.get("action") or "list").lower()
     storage_dir = get_storage_dir()
     issues_path = storage_dir / "issues.jsonl"
 
@@ -230,7 +240,7 @@ def _handle_issues(ctx, **kwargs) -> str:
         return json.dumps(counts, indent=2)
 
     elif action == "resolve":
-        issue_id = kwargs.get("issue_id", "")
+        issue_id = opts.get("issue_id") or kwargs.get("issue_id", "")
         if not issue_id:
             return json.dumps({"error": "issue_id required for resolve action", "hint": "Usage: /custodian issues resolve <issue_id>"})
         # Mark issue as resolved
@@ -329,10 +339,12 @@ def _cmd_status(_args: str = "") -> str:
 
 
 def _cmd_scan(args: str) -> str:
-    mode = args.strip().split()[0] if args.strip() else "light"
+    parts = args.strip().split()
+    mode = parts[0] if parts else "light"
     if mode not in ("light", "deep"):
         mode = "light"
-    return _handle_scan(None, mode=mode)
+    apply_fixes = any(p in ("--apply", "apply", "true") for p in parts[1:])
+    return _handle_scan(None, mode=mode, apply=apply_fixes)
 
 
 def _cmd_issues(args: str) -> str:
